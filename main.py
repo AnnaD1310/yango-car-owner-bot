@@ -1,742 +1,611 @@
-from aiogram import Bot, Dispatcher, F
-
-from aiogram.filters import CommandStart
-
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-from aiogram.enums import ParseMode
-
-from aiogram.client.default import DefaultBotProperties
-
-from dotenv import load_dotenv
-
-import asyncio, os
-
+import asyncio
+import os
 from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
-from typing import Dict, List, Tuple
-
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    Message,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from dotenv import load_dotenv
 
 
 # ---------- CONFIG ----------
 
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    print("ОШИБКА: BOT_TOKEN не найден в .env файле!")
-    exit(1)
-
-print(f"Токен загружен: {BOT_TOKEN[:10]}...")
+    raise SystemExit("BOT_TOKEN not found in .env")
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
 
+# ---------- MENU DATA MODEL ----------
 
 @dataclass
-
-class Link:
-
+class MenuNode:
+    id: str
     title: str
+    text: str
+    parent_id: Optional[str]
+    next_id: Optional[str]
+    children: List[Tuple[str, str]]  # (button_text, child_node_id)
 
-    url: str
+
+# Root and sections ---------------------------------------------------------
+
+MENU: Dict[str, MenuNode] = {}
 
 
+def add_node(node: MenuNode) -> None:
+    MENU[node.id] = node
 
-# ---------- CONTENT (редактируй под себя) ----------
 
-CONTENT: Dict[str, dict] = {
-
-    "main": {
-
-        "title": "Yango Car Owner Acquisition Assistant",
-
-        "subtitle": "Select a section:",
-
-        "menu": [
-
-            ("🚀 Start launch", "start_launch"),
-
-            ("📘 Materials & templates", "materials"),
-
-            ("💬 Communication flows", "flows"),
-
-            ("📊 Reports & KPI", "reports"),
-
-            ("💡 FAQ", "faq:0"),
-
-            ("👥 Contacts", "contacts"),
-
-        ],
-
-    },
-
-    "start_launch": {
-
-        "intro": (
-
-            "We'll guide you through the launch steps:\n"
-
-            "1) Market & model check\n"
-
-            "2) Choose channel (Landing / WhatsApp)\n"
-
-            "3) Lead collection (Forms → Sheets)\n"
-
-            "4) Marketing & launch\n"
-
-            "5) Monitoring & weekly report"
-
+# Root
+add_node(
+    MenuNode(
+        id="root",
+        title="Yango Car Owner Acquisition Assistant",
+        text=(
+            "<b>Yango Car Owner Acquisition Assistant</b>\n\n"
+            "Select a section:"
         ),
-
-        "steps": [
-
-            {
-
-                "title": "Step 1 — Market & model check",
-
-                "text": (
-
-                    "• Review participation models (Full Management / Sub-fleet)\n"
-
-                    "• Validate accepted models/years/mileage/insurance\n"
-
-                    "• Collect local insights (demand, competitors, pricing)\n"
-
-                    "• Use the Market Research template"
-
-                ),
-
-                "links": [
-
-                    Link("Market Research Template (Sheet)", "https://example.com/market-template"),
-
-                    Link("Sample market report (PDF)", "https://example.com/sample-report"),
-
-                ],
-
-            },
-
-            {
-
-                "title": "Step 2 — Choose your channel",
-
-                "text": "Pick primary flow and mirror its steps:",
-
-                "links": [
-
-                    Link("Landing — Angola", "https://yango.com/en_ao/carinvest"),
-
-                    Link("Landing — Zambia", "https://yango.com/en_zm/carinvest"),
-
-                    Link("Landing — Cameroon", "https://yango.com/en_cm/carinvest"),
-
-                    Link("WA flow — Miro (draft)", "https://miro.com/app/board/uXjVIMV2lOk=/"),
-
-                ],
-
-            },
-
-            {
-
-                "title": "Step 3 — Lead collection",
-
-                "text": (
-
-                    "Create a Google Form for leads and auto-sync to Sheets.\n"
-
-                    "Fields: Name, WhatsApp, Email, #cars, attribution, consent."
-
-                ),
-
-                "links": [
-
-                    Link("Create Google Form", "https://docs.google.com/forms"),
-
-                    Link("Tracker example (Sheet)", "https://docs.google.com/spreadsheets/d/1WhA1pt725L9uGHG6pDDRx5iFxSz2xPRuGJJGIPsAoAA/edit"),
-
-                ],
-
-            },
-
-            {
-
-                "title": "Step 4 — Marketing & launch",
-
-                "text": "Plan 2–4 weeks. Use existing banners, OOH, flyers, texts.",
-
-                "links": [
-
-                    Link("Perf banners (Figma)", "https://www.figma.com/design/GJ7bVwfVs0zjD84ZqmPohO/205-Perf-campaign_Luanda_Car-owners-acquisition?node-id=188-2"),
-
-                    Link("OOH (Figma)", "https://www.figma.com/design/aENCAQUznQPAtuZL1bvO6H/Yango-Angola---OOH-car--moto-owners----Angola----Luanda----General?node-id=0-1"),
-
-                    Link("Texts (Doc)", "https://docs.google.com/document/d/1FJ5qB6ytZ6GZ1Vn_7QKFjp_jOdFmAVDJV2r_L4jsDmY/edit"),
-
-                ],
-
-            },
-
-            {
-
-                "title": "Step 5 — Monitoring & weekly report",
-
-                "text": "Track CPL, #leads, #contracts, #active cars, retention. Submit weekly.",
-
-                "links": [
-
-                    Link("KPI Tracker (Sheet)", "https://docs.google.com/spreadsheets/d/1G43o8VMwbvrzNniwv8fOVm1W_xOawFLbfTZusbaDtZI/edit"),
-
-                ],
-
-            },
-
+        parent_id=None,
+        next_id=None,
+        children=[
+            ("🚀 Start Country Launch", "start_launch"),
+            ("📂 Templates & Materials", "templates"),
+            ("🔀 Communication Flows", "flows"),
+            ("📊 KPI & Reporting", "kpi"),
+            ("❓ FAQ", "faq"),
+            ("👥 Contacts", "contacts"),
         ],
+    )
+)
 
-    },
 
-    "materials": {
+# 1. Start Country Launch ---------------------------------------------------
 
-        "blocks": [
+start_launch_steps_order = [
+    "start_launch_step_1",
+    "start_launch_step_2",
+    "start_launch_step_3",
+    "start_launch_step_4",
+    "start_launch_step_5",
+    "start_launch_step_6",
+    "start_launch_step_7",
+]
 
-            ("Contracts", [
-
-                Link("Contract template (EN)", "https://example.com/contract-en"),
-
-                Link("Contract template (PT)", "https://example.com/contract-pt"),
-
-            ]),
-
-            ("Trackers", [
-
-                Link("Lead tracker (Sheet)", "https://docs.google.com/spreadsheets/d/1WhA1pt725L9uGHG6pDDRx5iFxSz2xPRuGJJGIPsAoAA/edit"),
-
-                Link("KPI tracker (Sheet)", "https://docs.google.com/spreadsheets/d/1G43o8VMwbvrzNniwv8fOVm1W_xOawFLbfTZusbaDtZI/edit"),
-
-            ]),
-
-            ("Landing brief", [
-
-                Link("Landing content template (Sheet)", "https://docs.google.com/spreadsheets/d/1IJbO26krjPKekR1aKZ4Q6SiwL45BPJiG2PsQ-jL7RFY/edit"),
-
-                Link("Create web ticket", "https://st.yandex-team.ru/createTicket?queue=YANGOWEB&_form=false"),
-
-            ]),
-
-            ("Creatives", [
-
-                Link("Performance banners (Figma)", "https://www.figma.com/design/GJ7bVwfVs0zjD84ZqmPohO/205-Perf-campaign_Luanda_Car-owners-acquisition?node-id=188-2"),
-
-                Link("OOH (Figma)", "https://www.figma.com/design/aENCAQUznQPAtuZL1bvO6H/Yango-Angola---OOH-car--moto-owners----Angola----Luanda----General?node-id=0-1"),
-
-                Link("Flyers (Figma)", "https://www.figma.com/design/2Dg2jkvZKmDLxFTQYYPkHK/Yango-Angola---Flyers-for-ANGOTIC-conference-in-Angola---General?node-id=12-2"),
-
-            ]),
-
-            ("Texts", [
-
-                Link("Texts (Sheet)", "https://docs.google.com/spreadsheets/d/1zNS5aUVxY5StLQ0J01TVHhpuqQjoy4YVARBBmFJ2Ra8/edit"),
-
-                Link("WA/Posts texts (Doc)", "https://docs.google.com/document/d/1FJ5qB6ytZ6GZ1Vn_7QKFjp_jOdFmAVDJV2r_L4jsDmY/edit"),
-
-            ]),
-
-        ]
-
-    },
-
-    "flows": {
-
-        "landing": [
-
-            "1) Ad click → Landing page",
-
-            "2) Value prop & requirements",
-
-            "3) Form → lead captured",
-
-            "4) Lead to sheet, daily calls",
-
-            "5) Office visit, docs & car check",
-
-            "6) Contract signing",
-
-            "7) Add car to fleet system",
-
+add_node(
+    MenuNode(
+        id="start_launch",
+        title="Start Country Launch",
+        text=(
+            "<b>Start Country Launch</b>\n\n"
+            "Follow these steps to launch a car-owner acquisition stream in a new country."
+        ),
+        parent_id="root",
+        next_id=None,
+        children=[
+            ("Step 1 — Market & Model", "start_launch_step_1"),
+            ("Step 2 — Ops Readiness", "start_launch_step_2"),
+            ("Step 3 — Acquisition Channels", "start_launch_step_3"),
+            ("Step 4 — Lead Processing", "start_launch_step_4"),
+            ("Step 5 — Partner Activation", "start_launch_step_5"),
+            ("Step 6 — Reporting & KPI", "start_launch_step_6"),
+            ("Step 7 — Go Live Checklist", "start_launch_step_7"),
         ],
+    )
+)
 
-        "whatsapp": [
+# Individual steps ----------------------------------------------------------
 
-            "1) Ad click → WA chat",
+add_node(
+    MenuNode(
+        id="start_launch_step_1",
+        title="Step 1 — Market & Model",
+        text=(
+            "<b>Step 1 — Market & Model</b>\n\n"
+            "<b>What to do:</b>\n"
+            "• Run basic market research (size of city, car ownership, typical income).\n"
+            "• Understand existing patterns: are people already renting out cars?\n"
+            "• Identify potential partner profiles (small fleets, individuals, SMEs).\n"
+            "• Build a financial model to estimate unit economics.\n\n"
+            "<b>Use:</b>\n"
+            "• Market analysis checklist\n"
+            "• Financial model template\n"
+            "• Examples of research from Zambia and Angola."
+        ),
+        parent_id="start_launch",
+        next_id="start_launch_step_2",
+        children=[],
+    )
+)
 
-            "2) Greeting & quick questions",
+add_node(
+    MenuNode(
+        id="start_launch_step_2",
+        title="Step 2 — Ops Readiness",
+        text=(
+            "<b>Step 2 — Ops Readiness</b>\n\n"
+            "Before launch, make sure operations are ready:\n\n"
+            "• Scouts and call-center flow defined and documented.\n"
+            "• Contracts are prepared and localized.\n"
+            "• Partners onboarding process is clear.\n"
+            "• Lead handling script is prepared for scouts / call center."
+        ),
+        parent_id="start_launch",
+        next_id="start_launch_step_3",
+        children=[],
+    )
+)
 
-            "3) Follow-up if no reply",
+add_node(
+    MenuNode(
+        id="start_launch_step_3",
+        title="Step 3 — Acquisition Channels",
+        text=(
+            "<b>Step 3 — Acquisition Channels</b>\n\n"
+            "Choose your primary channel and mirror existing flows.\n\n"
+            "<b>Landing flow:</b>\n"
+            "• Follow the standard landing structure.\n"
+            "• Re-use best performing landing examples (Zambia, Angola, Cameroon, Ethiopia).\n"
+            "• Align tracking with central team.\n\n"
+            "<b>WhatsApp flow:</b>\n"
+            "• Configure WA business account.\n"
+            "• Set auto greeting message.\n"
+            "• Re-use scripts for first interaction."
+        ),
+        parent_id="start_launch",
+        next_id="start_launch_step_4",
+        children=[],
+    )
+)
 
-            "4) Create chat with partner",
+add_node(
+    MenuNode(
+        id="start_launch_step_4",
+        title="Step 4 — Lead Processing",
+        text=(
+            "<b>Step 4 — Lead Processing</b>\n\n"
+            "<b>What to define:</b>\n"
+            "• Lead qualification rules (who is a good lead).\n"
+            "• Scripts for calling and follow-up.\n"
+            "• SLA: how fast you must contact each lead.\n"
+            "• Examples of good and bad leads."
+        ),
+        parent_id="start_launch",
+        next_id="start_launch_step_5",
+        children=[],
+    )
+)
 
-            "5) Office visit, checks",
+add_node(
+    MenuNode(
+        id="start_launch_step_5",
+        title="Step 5 — Partner Activation",
+        text=(
+            "<b>Step 5 — Partner Activation</b>\n\n"
+            "Focus on:\n\n"
+            "• Partner scoring checklist.\n"
+            "• Activation playbook (steps from first call to signed contract).\n"
+            "• Day 1 onboarding tasks for partner and drivers."
+        ),
+        parent_id="start_launch",
+        next_id="start_launch_step_6",
+        children=[],
+    )
+)
 
-            "6) Contract signing",
+add_node(
+    MenuNode(
+        id="start_launch_step_6",
+        title="Step 6 — Reporting & KPI",
+        text=(
+            "<b>Step 6 — Reporting & KPI</b>\n\n"
+            "Track:\n\n"
+            "• Main KPIs (CPL, conversion rates, cost per activated car).\n"
+            "• Country benchmarks (Zambia, Angola, Cameroon, Ethiopia).\n"
+            "• Weekly performance vs target."
+        ),
+        parent_id="start_launch",
+        next_id="start_launch_step_7",
+        children=[],
+    )
+)
 
-            "7) Add car to fleet system",
+add_node(
+    MenuNode(
+        id="start_launch_step_7",
+        title="Step 7 — Go Live Checklist",
+        text=(
+            "<b>Step 7 — Go Live Checklist</b>\n\n"
+            "Before going live:\n\n"
+            "• Final validation checklist done.\n"
+            "• Launch communication plan confirmed.\n"
+            "• Monitoring plan for first 14 days prepared."
+        ),
+        parent_id="start_launch",
+        next_id=None,
+        children=[],
+    )
+)
 
+
+# 2. Templates & Materials --------------------------------------------------
+
+add_node(
+    MenuNode(
+        id="templates",
+        title="Templates & Materials",
+        text=(
+            "<b>Templates & Materials</b>\n\n"
+            "Here you can find all core templates and links used across countries."
+        ),
+        parent_id="root",
+        next_id=None,
+        children=[
+            ("Contracts (EN / FR / PT)", "templates_contracts"),
+            ("Landing templates", "templates_landing"),
+            ("WhatsApp templates", "templates_wa"),
+            ("Marketing materials", "templates_marketing"),
+            ("Offline materials", "templates_offline"),
+            ("Financial model templates", "templates_finmodel"),
         ],
+    )
+)
 
-        "links": [
+add_node(
+    MenuNode(
+        id="templates_contracts",
+        title="Contracts (EN / FR / PT)",
+        text=(
+            "<b>Contracts (EN / FR / PT)</b>\n\n"
+            "Here go links to contract templates in English, French and Portuguese.\n"
+            "You can attach actual links or files for each language here."
+        ),
+        parent_id="templates",
+        next_id="templates_landing",
+        children=[],
+    )
+)
 
-            Link("Angola landing", "https://yango.com/en_ao/carinvest"),
+add_node(
+    MenuNode(
+        id="templates_landing",
+        title="Landing templates",
+        text=(
+            "<b>Landing templates</b>\n\n"
+            "Here go links to landing content templates and example tickets for web team."
+        ),
+        parent_id="templates",
+        next_id="templates_wa",
+        children=[],
+    )
+)
 
-            Link("Zambia landing", "https://yango.com/en_zm/carinvest"),
+add_node(
+    MenuNode(
+        id="templates_wa",
+        title="WhatsApp templates",
+        text=(
+            "<b>WhatsApp templates</b>\n\n"
+            "Here go greeting texts, follow-up messages and FAQ scripts for WA flows."
+        ),
+        parent_id="templates",
+        next_id="templates_marketing",
+        children=[],
+    )
+)
 
-            Link("Cameroon landing", "https://yango.com/en_cm/carinvest"),
+add_node(
+    MenuNode(
+        id="templates_marketing",
+        title="Marketing materials",
+        text=(
+            "<b>Marketing materials</b>\n\n"
+            "Here go performance banners, OOH creatives and digital assets used across countries."
+        ),
+        parent_id="templates",
+        next_id="templates_offline",
+        children=[],
+    )
+)
 
+add_node(
+    MenuNode(
+        id="templates_offline",
+        title="Offline materials",
+        text=(
+            "<b>Offline materials</b>\n\n"
+            "Here go flyers, printed materials and branding assets for events and offices."
+        ),
+        parent_id="templates",
+        next_id="templates_finmodel",
+        children=[],
+    )
+)
+
+add_node(
+    MenuNode(
+        id="templates_finmodel",
+        title="Financial model templates",
+        text=(
+            "<b>Financial model templates</b>\n\n"
+            "Here go unit economics models and ROI calculators for car-owner programs."
+        ),
+        parent_id="templates",
+        next_id=None,
+        children=[],
+    )
+)
+
+
+# 3. Communication Flows ----------------------------------------------------
+
+add_node(
+    MenuNode(
+        id="flows",
+        title="Communication Flows",
+        text=(
+            "<b>Communication Flows</b>\n\n"
+            "Choose a flow to see the high-level steps and links."
+        ),
+        parent_id="root",
+        next_id=None,
+        children=[
+            ("Landing flow", "flows_landing"),
+            ("WhatsApp flow (ZM example)", "flows_wa_zm"),
         ],
+    )
+)
 
-        "wa_texts": [
+add_node(
+    MenuNode(
+        id="flows_landing",
+        title="Landing flow",
+        text=(
+            "<b>Landing flow</b>\n\n"
+            "• Ad click → landing page.\n"
+            "• Landing explains value, requirements, models, earnings, trust.\n"
+            "• User fills form → lead captured in Google Sheet.\n"
+            "• Web team and marketing align on tracking and attribution.\n\n"
+            "Add links to specific landing examples and web tickets here."
+        ),
+        parent_id="flows",
+        next_id="flows_wa_zm",
+        children=[],
+    )
+)
 
-            "Greeting: Hi! Thanks for your interest in Yango Car Invest…",
+add_node(
+    MenuNode(
+        id="flows_wa_zm",
+        title="WhatsApp flow (ZM example)",
+        text=(
+            "<b>WhatsApp flow (ZM example)</b>\n\n"
+            "• Ad click → WA chat opens.\n"
+            "• Auto-greeting explains the program and next steps.\n"
+            "• Agent asks qualification questions and routes to partner.\n"
+            "• Follow-up messages for inactive leads.\n\n"
+            "Add links to Zambia WA flows and scripts here."
+        ),
+        parent_id="flows",
+        next_id=None,
+        children=[],
+    )
+)
 
-            "Follow-up (24h): Just checking if you're still interested…",
 
-            "Thank you: We'll review your info and contact you on WhatsApp…",
+# 4. KPI & Reporting --------------------------------------------------------
 
+add_node(
+    MenuNode(
+        id="kpi",
+        title="KPI & Reporting",
+        text=(
+            "<b>KPI & Reporting</b>\n\n"
+            "Use these blocks to align metrics and reporting cadence."
+        ),
+        parent_id="root",
+        next_id=None,
+        children=[
+            ("KPI definitions (formulas)", "kpi_definitions"),
+            ("Country benchmarks", "kpi_benchmarks"),
+            ("KPI tracker (sheet)", "kpi_tracker"),
+            ("Weekly report templates", "kpi_weekly_reports"),
         ],
+    )
+)
 
-    },
+add_node(
+    MenuNode(
+        id="kpi_definitions",
+        title="KPI definitions (formulas)",
+        text=(
+            "<b>KPI definitions (formulas)</b>\n\n"
+            "Describe how CPL, CPA, conversion rates and retention are calculated."
+        ),
+        parent_id="kpi",
+        next_id="kpi_benchmarks",
+        children=[],
+    )
+)
 
-    "reports": {
+add_node(
+    MenuNode(
+        id="kpi_benchmarks",
+        title="Country benchmarks",
+        text=(
+            "<b>Country benchmarks</b>\n\n"
+            "Add benchmark ranges for key KPIs based on Zambia, Angola, Cameroon, Ethiopia."
+        ),
+        parent_id="kpi",
+        next_id="kpi_tracker",
+        children=[],
+    )
+)
 
-        "kpi": ["Leads", "% leads → contracts", "Active cars", "CPL / CPA", "Retention 2/4/8 weeks"],
+add_node(
+    MenuNode(
+        id="kpi_tracker",
+        title="KPI tracker (sheet)",
+        text=(
+            "<b>KPI tracker (sheet)</b>\n\n"
+            "Link to the main KPI tracker used by local teams and central team."
+        ),
+        parent_id="kpi",
+        next_id="kpi_weekly_reports",
+        children=[],
+    )
+)
 
-        "links": [
-
-            Link("KPI tracker (Sheet)", "https://docs.google.com/spreadsheets/d/1G43o8VMwbvrzNniwv8fOVm1W_xOawFLbfTZusbaDtZI/edit"),
-
-            Link("Lead tracker (Sheet)", "https://docs.google.com/spreadsheets/d/1WhA1pt725L9uGHG6pDDRx5iFxSz2xPRuGJJGIPsAoAA/edit"),
-
-        ],
-
-    },
-
-    "faq": {
-
-        "items": [
-
-            ("Eligibility — models & mileage", "Accepted small city cars 2018–2025; mileage guidance applies; insurance required."),
-
-            ("Docs required", "Ownership proof, ID, insurance details depending on partner."),
-
-            ("Payments", "Weekly payouts via partner; online performance tracking available."),
-
-            ("Safety & insurance", "Responsibilities & coverage per partner policy."),
-
-            ("Scaling 1→5 cars", "Start with 1; sub-fleet model from 3+ with more control."),
-
-        ],
-
-        "page_size": 3,
-
-    },
-
-    "contacts": {
-
-        "people": [
-
-            ("Marketing — Anna Dolgova", "https://t.me/your_handle_here"),
-
-            ("Operations — Nikhar", "https://t.me/nikhar_here"),
-
-        ]
-
-    }
-
-}
+add_node(
+    MenuNode(
+        id="kpi_weekly_reports",
+        title="Weekly report templates",
+        text=(
+            "<b>Weekly report templates</b>\n\n"
+            "Describe structure of weekly updates: inputs, outputs, and narrative."
+        ),
+        parent_id="kpi",
+        next_id=None,
+        children=[],
+    )
+)
 
 
-CONTRACT_FILES: Dict[str, Tuple[str, str]] = {
-    "en": ("Contract Template — English (Zambia)", "resources/contracts/Contract Eng (Zambia).docx"),
-    "pt": ("Modelo de Contrato — Português (Angola)", "resources/contracts/Contract Portu (Angola).pdf"),
-    "fr": ("Modèle de Contrat — Français (Cameroon)", "resources/contracts/Сontract FR (Cameroon).pdf"),
-}
+# 5. FAQ --------------------------------------------------------------------
+
+faq_text = (
+    "<b>FAQ</b>\n\n"
+    "<b>Q: Who is this bot for?</b>\n"
+    "A: For local teams launching car owner acquisition streams.\n\n"
+    "<b>Q: Which countries are covered?</b>\n"
+    "A: Initially Zambia, Angola, Cameroon, Ethiopia — but structure is reusable.\n\n"
+    "<b>Q: Do I need technical knowledge to use it?</b>\n"
+    "A: No, the bot is designed as a guided checklist with links and templates.\n\n"
+    "<b>Q: Where do I find contracts?</b>\n"
+    "A: In Templates & Materials → Contracts (EN / FR / PT).\n\n"
+    "<b>Q: How often should I update KPIs?</b>\n"
+    "A: At least weekly, and more often during first 2–4 weeks after launch."
+)
+
+add_node(
+    MenuNode(
+        id="faq",
+        title="FAQ",
+        text=faq_text,
+        parent_id="root",
+        next_id=None,
+        children=[],
+    )
+)
+
+
+# 6. Contacts ---------------------------------------------------------------
+
+contacts_text = (
+    "<b>Contacts</b>\n\n"
+    "For marketing questions:\n"
+    "• @AnnaD1\n\n"
+    "For operations questions:\n"
+    "• @nikharpatel09"
+)
+
+add_node(
+    MenuNode(
+        id="contacts",
+        title="Contacts",
+        text=contacts_text,
+        parent_id="root",
+        next_id=None,
+        children=[],
+    )
+)
 
 
 # ---------- UI HELPERS ----------
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+
+def build_menu_keyboard(node: MenuNode) -> InlineKeyboardMarkup:
+    """Build keyboard with section items (children) and nav row (Back/Home/Next)."""
 
     kb = InlineKeyboardBuilder()
 
-    for title, cb in CONTENT["main"]["menu"]:
+    # Main section buttons (children)
+    for text, child_id in node.children:
+        kb.button(text=text, callback_data=f"menu:{child_id}")
 
-        kb.button(text=title, callback_data=cb)
+    # If there are children, put them in rows of 1
+    if node.children:
+        kb.adjust(1)
 
-    kb.adjust(1)  # По одной кнопке в ряд
+    # Navigation row
+    nav_kb = InlineKeyboardBuilder()
 
-    return kb.as_markup()
+    if node.parent_id is not None:
+        nav_kb.button(text="⬅ Back", callback_data=f"menu:{node.parent_id}")
 
+    nav_kb.button(text="🏠 Home", callback_data="menu:root")
 
+    if node.next_id is not None:
+        nav_kb.button(text="➡ Next", callback_data=f"menu:{node.next_id}")
 
-def links_kb(links: List[Link], back_cb: str) -> InlineKeyboardMarkup:
+    if nav_kb.buttons:
+        nav_kb.adjust(len(nav_kb.buttons))
+        # Append nav buttons as last row(s)
+        kb.buttons.extend(nav_kb.buttons)
 
-    kb = InlineKeyboardBuilder()
-
-    for link in links:
-
-        kb.button(text=f"🔗 {link.title}", url=link.url)
-
-    kb.button(text="⬅️ Back", callback_data=back_cb)
-
-    kb.adjust(1)
-
-    return kb.as_markup()
-
-
-
-def step_kb(step_idx: int, total: int) -> InlineKeyboardMarkup:
-
-    kb = InlineKeyboardBuilder()
-
-    if step_idx > 0:
-
-        kb.button(text="⬅️ Prev", callback_data=f"launch_step:{step_idx-1}")
-
-    if step_idx < total - 1:
-
-        kb.button(text="Next ➡️", callback_data=f"launch_step:{step_idx+1}")
-
-    kb.button(text="🏠 Menu", callback_data="home")
-
-    kb.adjust(2)
-
-    return kb.as_markup()
+    return kb.as_markup() if kb.buttons else nav_kb.as_markup()
 
 
-
-def faq_page_kb(page: int) -> InlineKeyboardMarkup:
-
-    size = CONTENT["faq"]["page_size"]
-
-    total_items = len(CONTENT["faq"]["items"])
-
-    total_pages = (total_items + size - 1) // size
-
-    kb = InlineKeyboardBuilder()
-
-    if page > 0:
-
-        kb.button(text="⬅️ Prev", callback_data=f"faq:{page-1}")
-
-    if page < total_pages - 1:
-
-        kb.button(text="Next ➡️", callback_data=f"faq:{page+1}")
-
-    kb.button(text="🏠 Menu", callback_data="home")
-
-    kb.adjust(2)
-
-    return kb.as_markup()
+async def show_node(message: Message, node_id: str) -> None:
+    node = MENU[node_id]
+    await message.answer(node.text, reply_markup=build_menu_keyboard(node))
 
 
-def contracts_kb() -> InlineKeyboardMarkup:
-
-    kb = InlineKeyboardBuilder()
-    for code, (title, _) in CONTRACT_FILES.items():
-        kb.button(text=title, callback_data=f"contract_file:{code}")
-    kb.button(text="⬅️ Back", callback_data="materials")
-    kb.button(text="🏠 Menu", callback_data="home")
-    kb.adjust(1)
-    return kb.as_markup()
-
+async def edit_node(cb: CallbackQuery, node_id: str) -> None:
+    node = MENU[node_id]
+    await cb.message.edit_text(node.text, reply_markup=build_menu_keyboard(node))
+    await cb.answer()
 
 
 # ---------- HANDLERS ----------
 
-@dp.message(CommandStart())
 
-async def on_start(msg: Message):
-
-    try:
-        print(f"Received /start from user {msg.from_user.id}")
-
-        main = CONTENT["main"]
-
-        text = f"<b>{main['title']}</b>\n{main['subtitle']}"
-
-        keyboard = main_menu_kb()
-        print(f"Keyboard created, sending message...")
-
-        await msg.answer(text, reply_markup=keyboard)
-        
-        print("Sent menu to user")
-    except Exception as e:
-        print(f"Error in on_start: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            await msg.answer(f"Произошла ошибка: {str(e)}")
-        except:
-            pass
+@router.message(CommandStart())
+async def cmd_start(message: Message) -> None:
+    await show_node(message, "root")
 
 
-
-@dp.callback_query(F.data == "home")
-
-async def on_home(cb: CallbackQuery):
-
-    try:
-        main = CONTENT["main"]
-
-        text = f"<b>{main['title']}</b>\n{main['subtitle']}"
-
-        await cb.message.edit_text(text, reply_markup=main_menu_kb())
-
-        await cb.answer()
-    except Exception as e:
-        print(f"Error in on_home: {e}")
-        await cb.answer("Произошла ошибка", show_alert=True)
-
-
-
-# Start launch
-
-@dp.callback_query(F.data == "start_launch")
-
-async def on_start_launch(cb: CallbackQuery):
-
-    intro = CONTENT["start_launch"]["intro"]
-
-    await cb.message.edit_text(f"<b>Start Launch — Wizard</b>\n\n{intro}",
-
-                               reply_markup=step_kb(0, len(CONTENT["start_launch"]["steps"])))
-
-    await cb.answer()
-
-
-
-@dp.callback_query(F.data.startswith("launch_step:"))
-
-async def on_launch_step(cb: CallbackQuery):
-
-    idx = int(cb.data.split(":")[1])
-
-    steps = CONTENT["start_launch"]["steps"]
-
-    idx = max(0, min(idx, len(steps)-1))
-
-    step = steps[idx]
-
-    text = f"<b>{step['title']}</b>\n\n{step['text']}"
-
-    if step.get("links"):
-
-        await cb.message.edit_text(text)
-
-        await cb.message.edit_reply_markup(reply_markup=links_kb(step["links"], back_cb=f"launch_step:{idx}"))
-
-    else:
-
-        await cb.message.edit_text(text, reply_markup=step_kb(idx, len(steps)))
-
-    await cb.answer()
-
-
-
-# Materials
-
-@dp.callback_query(F.data == "materials")
-
-async def on_materials(cb: CallbackQuery):
-
-    blocks = CONTENT["materials"]["blocks"]
-
-    kb = InlineKeyboardBuilder()
-
-    for i, (title, _) in enumerate(blocks):
-
-        kb.button(text=f"📁 {title}", callback_data=f"materials_block:{i}")
-
-    kb.button(text="🏠 Menu", callback_data="home")
-
-    kb.adjust(1)
-
-    await cb.message.edit_text("<b>Materials & templates</b>\nPick a category:", reply_markup=kb.as_markup())
-
-    await cb.answer()
-
-
-
-@dp.callback_query(F.data.startswith("materials_block:"))
-
-async def on_materials_block(cb: CallbackQuery):
-
-    idx = int(cb.data.split(":")[1])
-
-    title, links = CONTENT["materials"]["blocks"][idx]
-
-    if title == "Contracts":
-        await cb.answer()
-        await cb.message.answer("<b>Contracts</b>\nChoose a language:", reply_markup=contracts_kb())
+@router.callback_query(F.data.startswith("menu:"))
+async def on_menu_callback(cb: CallbackQuery) -> None:
+    _, node_id = cb.data.split(":", 1)
+    if node_id not in MENU:
+        await cb.answer("Unknown section", show_alert=True)
         return
-    else:
-        await cb.message.edit_text(f"<b>{title}</b>")
-        await cb.message.edit_reply_markup(reply_markup=links_kb(links, back_cb="materials"))
-
-    await cb.answer()
-
-
-
-# Flows
-
-@dp.callback_query(F.data == "flows")
-
-async def on_flows(cb: CallbackQuery):
-
-    landing = "\n".join(f"• {s}" for s in CONTENT["flows"]["landing"])
-
-    wa = "\n".join(f"• {s}" for s in CONTENT["flows"]["whatsapp"])
-
-    text = f"<b>Communication flows</b>\n\n<u>Landing flow</u>\n{landing}\n\n<u>WhatsApp flow</u>\n{wa}"
-
-    kb = InlineKeyboardBuilder()
-
-    for link in CONTENT["flows"]["links"]:
-
-        kb.button(text=f"🔗 {link.title}", url=link.url)
-
-    kb.button(text="⬅️ Back", callback_data="home")
-
-    kb.adjust(1)
-
-    await cb.message.edit_text(text, reply_markup=kb.as_markup())
-
-    await cb.answer()
-
-
-
-# Reports
-
-@dp.callback_query(F.data == "reports")
-
-async def on_reports(cb: CallbackQuery):
-
-    kpis = "\n".join(f"• {k}" for k in CONTENT["reports"]["kpi"])
-
-    text = f"<b>Reports & KPI</b>\n\nTrack weekly:\n{kpis}"
-
-    await cb.message.edit_text(text)
-
-    await cb.message.edit_reply_markup(reply_markup=links_kb(CONTENT["reports"]["links"], back_cb="home"))
-
-    await cb.answer()
-
-
-
-# FAQ (pagination)
-
-@dp.callback_query(F.data.startswith("faq:"))
-
-async def on_faq(cb: CallbackQuery):
-
-    page = int(cb.data.split(":")[1])
-
-    items = CONTENT["faq"]["items"]
-
-    size = CONTENT["faq"]["page_size"]
-
-    start, end = page*size, min((page+1)*size, len(items))
-
-    chunk = items[start:end]
-
-    lines = ["<b>FAQ</b>\n"]
-
-    for q, a in chunk:
-
-        lines.append(f"<b>• {q}</b>\n{a}\n")
-
-    await cb.message.edit_text("\n".join(lines).strip(), reply_markup=faq_page_kb(page))
-
-    await cb.answer()
-
-
-
-# Contacts
-
-@dp.callback_query(F.data == "contacts")
-
-async def on_contacts(cb: CallbackQuery):
-
-    people: List[Tuple[str, str]] = CONTENT["contacts"]["people"]
-
-    kb = InlineKeyboardBuilder()
-
-    for name, url in people:
-
-        kb.button(text=name, url=url)
-
-    kb.button(text="⬅️ Back", callback_data="home")
-
-    kb.adjust(1)
-
-    await cb.message.edit_text("<b>Contacts</b>\nTap to open Telegram:", reply_markup=kb.as_markup())
-
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("contract_file:"))
-
-async def on_contract_file(cb: CallbackQuery):
-
-    code = cb.data.split(":")[1]
-
-    meta = CONTRACT_FILES.get(code)
-
-    if not meta:
-
-        await cb.answer("File not found", show_alert=True)
-
-        return
-
-    title, path = meta
-
-    try:
-
-        document = FSInputFile(path)
-
-    except FileNotFoundError:
-
-        await cb.answer("Contract file is missing", show_alert=True)
-
-        return
-
-    await cb.message.answer_document(document, caption=title)
-
-    await cb.answer()
-
+    await edit_node(cb, node_id)
 
 
 # ---------- RUN ----------
 
-async def main():
 
-    print("Bot running with menu…")
-    print("Ожидание сообщений...")
-
-    try:
-        await dp.start_polling(bot)
-    except Exception as e:
-        print(f'Ошибка при polling: {e}')
-        import traceback
-        traceback.print_exc()
-        raise
-
+async def main() -> None:
+    print("Bot running with structured menu…")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())
+
