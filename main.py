@@ -1088,86 +1088,54 @@ def build_menu_keyboard(node: MenuNode) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# Global lock to prevent duplicate renders
-_rendering_lock = set()
+async def show_node(message: Message, node_id: str) -> None:
+    """
+    Show a menu node by sending a new message.
+    Used for /start command.
+    For callbacks, use edit_node instead.
+    """
+    # If node_id not found, fallback to root
+    if node_id not in MENU:
+        node_id = "root"
+    
+    node = MENU[node_id]
+    text = node.text
+    keyboard = build_menu_keyboard(node)
+    
+    # Send new message
+    await message.answer(text, reply_markup=keyboard)
+    
+    # Send files if any
+    if node.files:
+        for file_ref in node.files:
+            if file_ref.path.exists():
+                file = FSInputFile(file_ref.path)
+                await message.answer_document(file, caption=file_ref.title)
 
-async def render_node(
-    node_id: str,
-    message: Optional[Message] = None,
-    callback: Optional[CallbackQuery] = None,
-) -> None:
+
+async def edit_node(message: Message, node_id: str) -> None:
     """
-    Universal function to render a menu node.
-    Either sends a new message OR edits an existing one, but never both.
+    Edit existing message to show a menu node.
+    Used for callback queries.
     """
-    # Create unique lock key
-    if message is not None:
-        lock_key = f"msg:{message.chat.id}:{message.message_id}"
-    elif callback is not None and callback.message is not None:
-        lock_key = f"cb:{callback.message.chat.id}:{callback.message.message_id}:{callback.data}"
-    else:
-        return
+    # If node_id not found, fallback to root
+    if node_id not in MENU:
+        node_id = "root"
     
-    # Check if already rendering this exact action
-    if lock_key in _rendering_lock:
-        return
+    node = MENU[node_id]
+    text = node.text
+    keyboard = build_menu_keyboard(node)
     
-    # Lock this action
-    _rendering_lock.add(lock_key)
-    
-    # Clean old locks (keep last 50)
-    if len(_rendering_lock) > 50:
-        _rendering_lock.clear()
-    
+    # Edit existing message
     try:
-        # If node_id not found, fallback to root without alerts or exceptions
-        if node_id not in MENU:
-            node_id = "root"
-        
-        node = MENU[node_id]
-        text = node.text
-        keyboard = build_menu_keyboard(node)
-        
-        # Variant 1: start command or text message - send new message
-        if message is not None:
-            await message.answer(text, reply_markup=keyboard)
-            # Send files if any
-            if node.files:
-                for file_ref in node.files:
-                    if file_ref.path.exists():
-                        file = FSInputFile(file_ref.path)
-                        await message.answer_document(file, caption=file_ref.title)
-            return
-        
-        # Variant 2: inline button click - edit existing message
-        if callback is not None:
-            if callback.message is None:
-                return
-            try:
-                await callback.message.edit_text(
-                    text,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True
-                )
-            except Exception as e:
-                # If edit fails (e.g., message not modified), just log it
-                print(f"Edit failed (message may be unchanged): {e}")
-            # Always answer callback silently (no alerts, no errors)
-            try:
-                await callback.answer()
-            except:
-                pass
-            return
-    finally:
-        # Remove lock after a short delay
-        import asyncio
-        asyncio.create_task(_unlock_after_delay(lock_key))
-
-async def _unlock_after_delay(lock_key: str):
-    """Remove lock after a delay."""
-    import asyncio
-    await asyncio.sleep(1)
-    _rendering_lock.discard(lock_key)
+        await message.edit_text(
+            text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        # If edit fails (e.g., message not modified), just log it
+        print(f"Edit failed (message may be unchanged): {e}")
 
 
 # ---------- HANDLERS ----------
@@ -1176,13 +1144,10 @@ async def _unlock_after_delay(lock_key: str):
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     """Handle /start command - show root menu."""
-    await render_node("root", message=message)
+    await show_node(message, "root")
 
 
-# Track processed callbacks to prevent duplicates
-_processed_callbacks = set()
-
-# File callback handler must be registered BEFORE universal menu handler
+# File callback handler - must be registered BEFORE menu handler
 @router.callback_query(F.data.startswith("file:"))
 async def on_file_callback(cb: CallbackQuery) -> None:
     """Handle file download requests"""
@@ -1191,19 +1156,13 @@ async def on_file_callback(cb: CallbackQuery) -> None:
     
     try:
         # Parse callback data: file:node_id:file_title
-        # Handle both new format (file:node_id:file_title) and old format (file:version:node_id:file_title)
-        parts = cb.data.split(":", 3)
+        parts = cb.data.split(":", 2)
         
-        if len(parts) == 3:
-            # New format: file:node_id:file_title
-            _, node_id, file_title = parts
-        elif len(parts) == 4:
-            # Old format: file:version:node_id:file_title
-            _, version, node_id, file_title = parts
-        else:
+        if len(parts) != 3:
             await cb.answer("Invalid file request format", show_alert=True)
             return
         
+        _, node_id, file_title = parts
         node = MENU.get(node_id)
         
         if not node or not node.files:
@@ -1225,71 +1184,27 @@ async def on_file_callback(cb: CallbackQuery) -> None:
         await cb.answer("An error occurred while loading the file", show_alert=True)
 
 
-# Universal menu callback handler - handles menu:, v1:, v2:, v3:, v4: formats
-@router.callback_query()
+# Menu callback handler - handles ONLY "menu:<node_id>" format
+@router.callback_query(F.data.startswith("menu:"))
 async def on_menu_callback(cb: CallbackQuery) -> None:
-    """Handle menu navigation callbacks - supports all formats: menu:, v1:, v2:, v3:, v4:"""
+    """Handle menu navigation callbacks - format: menu:<node_id>"""
     if cb.message is None:
         return
     
-    # Skip file callbacks - they are handled separately
-    if cb.data and cb.data.startswith("file:"):
+    # Parse callback data: "menu:<node_id>"
+    _, node_id = cb.data.split(":", 1)
+    node_id = node_id.strip()
+    
+    # If node_id not found in MENU - show alert and return
+    if node_id not in MENU:
+        await cb.answer("Unknown section – please send /start", show_alert=True)
         return
     
-    # Create unique identifier
-    callback_id = f"{cb.message.chat.id}:{cb.message.message_id}:{cb.data}"
+    # Close loading indicator in Telegram
+    await cb.answer()
     
-    # Check if already processed
-    if callback_id in _processed_callbacks:
-        # Just answer silently
-        try:
-            await cb.answer()
-        except:
-            pass
-        return
-    
-    # Mark as processed BEFORE processing
-    _processed_callbacks.add(callback_id)
-    
-    # Clean old entries
-    if len(_processed_callbacks) > 200:
-        _processed_callbacks.clear()
-    
-    # Parse callback data - handle all formats: menu:<node_id>, v1:<node_id>, v2:<node_id>, v3:<node_id>, v4:<node_id>
-    raw = cb.data or ""
-    node_id = "root"  # Default fallback
-    
-    try:
-        if ":" in raw:
-            prefix, payload = raw.split(":", 1)
-            # For all our formats (menu, v1, v2, v3, v4), take the payload as node_id
-            if prefix in {"menu", "v1", "v2", "v3", "v4"}:
-                node_id = payload.strip()
-            else:
-                # Unknown prefix - use payload anyway, will fallback to root if not found
-                node_id = payload.strip()
-        else:
-            # No colon - use raw as node_id
-            node_id = raw.strip()
-        
-        # Block removed nodes - fallback to root
-        if node_id == "materials_ops":
-            node_id = "root"
-        
-        # If node_id not found, fallback to root (render_node will handle this)
-        if node_id not in MENU:
-            node_id = "root"
-        
-        # Render the node (will fallback to root if node_id not found)
-        await render_node(node_id, callback=cb)
-        
-    except Exception as e:
-        # On any error, just render root without alerts
-        print(f"Error in callback handler: {e}")
-        try:
-            await render_node("root", callback=cb)
-        except:
-            pass
+    # Show the requested node by editing existing message
+    await edit_node(cb.message, node_id)
 
 
 # ---------- RUN ----------
