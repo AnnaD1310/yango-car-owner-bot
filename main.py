@@ -99,7 +99,14 @@ add_node(
         title="Start launch",
         text=(
             "<b>🚀 Start launch</b>\n\n"
-            "Follow these steps to launch a car-owner acquisition stream in a new country."
+            "This section explains what the Car Owner Acquisition stream is and how to launch it step by step.\n\n"
+            "The Car Owner Acquisition program allows car owners to earn income by renting their vehicles "
+            "to Yango partners, without driving themselves.\n\n"
+            "This bot guides you through all key steps required to launch the stream in a new market — "
+            "from market validation and operational readiness to acquisition channels, lead processing "
+            "and reporting.\n\n"
+            "Use the steps below in order. Each step builds on the previous one and helps ensure "
+            "a smooth and scalable launch."
         ),
         parent_id="root",
         children=[
@@ -1140,10 +1147,28 @@ async def edit_node(message: Message, node_id: str) -> None:
 
 # ---------- HANDLERS ----------
 
+# Track processed messages and callbacks to prevent duplicates
+_processed_messages = set()
+_processed_callbacks = set()
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     """Handle /start command - show root menu."""
+    # Create unique identifier for this message
+    msg_id = f"{message.chat.id}:{message.message_id}"
+    
+    # If already processed, skip
+    if msg_id in _processed_messages:
+        return
+    
+    # Mark as processed
+    _processed_messages.add(msg_id)
+    
+    # Clean up old entries periodically
+    if len(_processed_messages) > 200:
+        _processed_messages.clear()
+    
     await show_node(message, "root")
 
 
@@ -1153,6 +1178,24 @@ async def on_file_callback(cb: CallbackQuery) -> None:
     """Handle file download requests"""
     if cb.message is None:
         return
+    
+    # Create unique identifier
+    callback_id = f"{cb.message.chat.id}:{cb.message.message_id}:{cb.data}"
+    
+    # If already processed, skip
+    if callback_id in _processed_callbacks:
+        try:
+            await cb.answer()
+        except:
+            pass
+        return
+    
+    # Mark as processed
+    _processed_callbacks.add(callback_id)
+    
+    # Clean up old entries periodically
+    if len(_processed_callbacks) > 200:
+        _processed_callbacks.clear()
     
     try:
         # Parse callback data: file:node_id:file_title
@@ -1190,6 +1233,24 @@ async def on_menu_callback(cb: CallbackQuery) -> None:
     """Handle menu navigation callbacks - format: menu:<node_id>"""
     if cb.message is None:
         return
+    
+    # Create unique identifier
+    callback_id = f"{cb.message.chat.id}:{cb.message.message_id}:{cb.data}"
+    
+    # If already processed, skip
+    if callback_id in _processed_callbacks:
+        try:
+            await cb.answer()
+        except:
+            pass
+        return
+    
+    # Mark as processed
+    _processed_callbacks.add(callback_id)
+    
+    # Clean up old entries periodically
+    if len(_processed_callbacks) > 200:
+        _processed_callbacks.clear()
     
     # Parse callback data: "menu:<node_id>"
     _, node_id = cb.data.split(":", 1)
