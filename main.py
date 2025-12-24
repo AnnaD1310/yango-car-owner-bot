@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -26,6 +27,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN not found in .env")
 
+# Verify only one token is loaded
+if BOT_TOKEN.count(":") != 1:
+    raise SystemExit("Invalid BOT_TOKEN format in .env")
+
+# Log token prefix for verification
+TOKEN_PREFIX = BOT_TOKEN[:5]
+print(f"BOT STARTED WITH TOKEN PREFIX: {TOKEN_PREFIX}")
+
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 router = Router()
@@ -34,6 +43,59 @@ dp.include_router(router)
 # Paths
 RESOURCES_DIR = Path(__file__).parent / "resources"
 CONTRACTS_DIR = RESOURCES_DIR / "contracts"
+
+# Checklist state storage: {user_id: {item_id: bool}}
+_checklist_state: Dict[int, Dict[str, bool]] = {}
+
+# User locks for preventing race conditions in callbacks
+_user_locks: Dict[int, asyncio.Lock] = {}
+_lock_manager_lock = asyncio.Lock()
+
+# Checklist structure
+CHECKLIST_ITEMS = {
+    "Market & model": [
+        ("market_demand", "Market demand validated"),
+        ("partner_model", "Partner model selected"),
+        ("unit_economics", "Unit economics calculated"),
+        ("target_regions", "Target regions defined"),
+    ],
+    "Ops & ownership": [
+        ("ops_owner", "Ops owner assigned"),
+        ("partner_contact", "Partner contact established"),
+        ("call_center_ready", "Call center ready"),
+        ("escalation_defined", "Escalation process defined"),
+    ],
+    "Contracts & legal": [
+        ("contract_template", "Contract template ready"),
+        ("partner_alignment", "Partner alignment confirmed"),
+        ("legal_approval", "Legal approval obtained"),
+        ("signing_process", "Signing process tested"),
+    ],
+    "Lead processing & tracking": [
+        ("tracker_created", "Lead tracker created"),
+        ("statuses_configured", "Statuses configured"),
+        ("routing_tested", "Routing flow tested"),
+        ("no_duplicates", "No duplicate handling verified"),
+    ],
+    "Acquisition & budgets": [
+        ("channels_approved", "Channels approved"),
+        ("landing_validated", "Landing page validated"),
+        ("whatsapp_active", "WhatsApp flow active"),
+        ("budgets_approved", "Budgets approved"),
+        ("tracking_checked", "Tracking verified"),
+    ],
+    "Reporting & monitoring": [
+        ("kpi_defined", "KPIs defined"),
+        ("reporting_template", "Reporting template ready"),
+        ("cadence_agreed", "Reporting cadence agreed"),
+        ("first_report_set", "First report scheduled"),
+    ],
+    "Go-live decision": [
+        ("all_checks_done", "All checks completed"),
+        ("launch_date_confirmed", "Launch date confirmed"),
+        ("ready_to_scale", "Ready to scale"),
+    ],
+}
 
 
 # ---------- MENU DATA MODEL ----------
@@ -79,14 +141,66 @@ add_node(
             "<b>Yango Car Owner Acquisition Assistant</b>\n\n"
             "Select a section:"
         ),
+        # NOTE: Root menu children are NOT used - build_main_menu() defines static menu
+        # This is kept for reference only, but build_main_menu() is the source of truth
         children=[
+            ("How it works", "what_is_coa"),
             ("🚀 Start launch", "start_launch"),
-            ("📁 Materials & templates", "materials"),
             ("💬 Communication flows", "flows"),
+            ("📁 Materials & templates", "materials"),
             ("📊 Reports & KPI", "reports"),
             ("❓ FAQ", "faq"),
             ("👥 Contacts", "contacts"),
         ],
+    )
+)
+
+
+# 0. How it works ------------------------------------------------------------
+
+what_is_coa_text = (
+    "<b>✅ How it works</b>\n\n"
+    "<b>Description:</b>\n"
+    "Car Owner Acquisition is a program that helps grow supply "
+    "by bringing additional cars into the Yango ecosystem "
+    "through individual car owners.\n\n"
+    "Car owners do not drive themselves.\n"
+    "Instead, they rent out their vehicles and earn regular income, "
+    "while Yango partners manage drivers and daily operations.\n\n"
+    "<b>How it works in practice:</b>\n\n"
+    "1. We attract car owners through marketing campaigns "
+    "(performance, landing pages, WhatsApp, offline channels).\n\n"
+    "2. Car owners leave a lead via a landing page or WhatsApp.\n\n"
+    "3. Leads are processed and qualified by local teams "
+    "or a call center.\n\n"
+    "4. Car owners sign a contract with a Yango partner.\n\n"
+    "5. The partner assigns a driver and manages the vehicle.\n\n"
+    "6. The car goes online, completes trips and generates income.\n\n"
+    "7. Car owners receive regular payouts.\n\n"
+    "<b>Why this program is important:</b>\n\n"
+    "• Increases total car supply in the market\n"
+    "• Unlocks cars from owners who don't want to drive\n"
+    "• Supports faster driver onboarding\n"
+    "• Enables scalable and predictable market growth\n\n"
+    "<b>How car owners are usually acquired:</b>\n\n"
+    "• Performance marketing (Meta, Google, TikTok)\n"
+    "• Landing pages (recommended)\n"
+    "• WhatsApp (early-stage or temporary)\n"
+    "• Offline channels (OOH, flyers, QR codes)\n"
+    "• In-app placements (where available)\n\n"
+    "<b>What to do next:</b>\n\n"
+    "If you are launching this stream for the first time, "
+    "start with Step 1 — Market & Model.\n\n"
+    "If you already have experience, "
+    "you can jump directly to the relevant steps."
+)
+
+add_node(
+    MenuNode(
+        id="what_is_coa",
+        title="How it works",
+        text=what_is_coa_text,
+        parent_id="root",
     )
 )
 
@@ -113,10 +227,8 @@ add_node(
             ("Step 1 — Market & Model", "start_step_1"),
             ("Step 2 — Ops readiness", "start_step_2"),
             ("Step 3 — Acquisition channels", "start_step_3"),
-            ("Step 4 — Lead processing", "start_step_4"),
-            ("Step 5 — Partner activation", "start_step_5"),
-            ("Step 6 — Reporting & KPI", "start_step_6"),
-            ("Step 7 — Go live checklist", "start_step_7"),
+            ("Step 4 — Lead processing & reporting", "start_step_4"),
+            ("Step 5 — Go live checklist", "start_step_7"),
         ],
     )
 )
@@ -128,25 +240,127 @@ add_node(
         title="Step 1 — Market & Model",
         text=(
             "<b>Step 1 — Market & Model</b>\n\n"
-            "<b>Market analysis checklist:</b>\n"
-            "• Size of city and car ownership patterns\n"
-            "• Typical income levels and spending habits\n"
-            "• Existing car rental patterns (if any)\n"
-            "• Potential partner profiles (small fleets, individuals, SMEs)\n\n"
-            "<b>Financial model template:</b>\n"
-            "Build a financial model to estimate unit economics.\n\n"
-            "<b>Examples of research:</b>\n"
-            "See landing examples and research from existing countries."
+            "This step helps evaluate whether the Car Owner Acquisition stream "
+            "makes sense to launch in a specific market and which model should be used.\n\n"
+            "The goal of this step is to answer three key questions:\n"
+            "• Is there demand from car owners to rent out their vehicles?\n"
+            "• Is the local market and regulation suitable for this model?\n"
+            "• Which operational setup will work best in this country?\n\n"
+            "This analysis must be completed before any operational or marketing launch."
         ),
         parent_id="start_launch",
-        links=[
-            Link("🇿🇲 Zambia landing", "https://yango.com/en_zm/carinvest/"),
-            Link("🇦🇴 Angola landing", "https://yango.com/en_ao/carinvest/"),
-            Link("🇨🇲 Cameroon landing", "https://yango.com/en_cm/carinvest/"),
-            Link("🇪🇹 Ethiopia landing", "https://yango.com/en_et/carinvest/"),
-            Link("Car acquisition tracker example (Sheet)",
-                 "https://docs.google.com/spreadsheets/d/10AaTXOAnVByDSS3FKISnkxXkqutKzbq1qkXrspyQKj0/edit?gid=288663658#gid=288663658"),
+        children=[
+            ("Market demand & behavior", "start_step_1_market_demand"),
+            ("Unit economics & financial model", "start_step_1_financial_model"),
+            ("Partner landscape", "start_step_1_partner_landscape"),
+            ("Go / No-Go decision", "start_step_1_launch_decision"),
         ],
+    )
+)
+
+# Step 1.1 - Market demand & behavior
+add_node(
+    MenuNode(
+        id="start_step_1_market_demand",
+        title="Market demand & behavior",
+        text=(
+            "<b>Market demand & behavior</b>\n\n"
+            "Before launch, it is critical to understand how common it is "
+            "for car owners to rent out their vehicles in the local market.\n\n"
+            "<b>Key questions to analyze:</b>\n"
+            "• Is car rental / car leasing common among individuals?\n"
+            "• Do people already rent cars to drivers or fleets?\n"
+            "• Are there informal vehicle owners or small fleet owners?\n"
+            "• Is there trust in third-party vehicle management?\n\n"
+            "<b>Signals that support launch:</b>\n"
+            "• Existing informal rental market\n"
+            "• Presence of small fleets (5–20 cars)\n"
+            "• Car owners looking for passive income\n"
+            "• High driver demand with low car supply\n\n"
+            "<b>Red flags:</b>\n"
+            "• Strong cultural resistance to renting out cars\n"
+            "• Legal or insurance restrictions\n"
+            "• High risk of fraud or vehicle damage"
+        ),
+        parent_id="start_step_1",
+    )
+)
+
+# Step 1.2 - Unit economics & financial model
+add_node(
+    MenuNode(
+        id="start_step_1_financial_model",
+        title="Unit economics & financial model",
+        text=(
+            "<b>Unit economics & financial model</b>\n\n"
+            "A basic unit economics model must be prepared before launch.\n\n"
+            "<b>The model helps answer:</b>\n"
+            "• Can car owners earn attractive weekly income?\n"
+            "• Can partners operate the model profitably?\n"
+            "• Are commissions, fees and costs sustainable?\n\n"
+            "<b>This model should include:</b>\n"
+            "• Average trips per car per day\n"
+            "• Revenue per trip\n"
+            "• Driver costs and partner commission\n"
+            "• Owner payout\n"
+            "• Platform commission\n\n"
+            "<b>Unit economics template:</b>\n"
+            "https://docs.google.com/spreadsheets/d/13hyO6Z6D7KxN9CH9llOW9vNhtyAMmATjcp7qklyCdb0/edit?gid=1452383912#gid=1452383912\n\n"
+            "⚠ <b>NOTE</b>\n"
+            "This template shows a base example only.\n"
+            "Final assumptions must be validated with:\n"
+            "• Local operations\n"
+            "• Partner\n"
+            "• Finance team (if needed)"
+        ),
+        parent_id="start_step_1",
+        links=[
+            Link("Unit economics template",
+                 "https://docs.google.com/spreadsheets/d/13hyO6Z6D7KxN9CH9llOW9vNhtyAMmATjcp7qklyCdb0/edit?gid=1452383912#gid=1452383912"),
+        ],
+    )
+)
+
+# Step 1.3 - Partner landscape
+add_node(
+    MenuNode(
+        id="start_step_1_partner_landscape",
+        title="Partner landscape",
+        text=(
+            "<b>Partner landscape</b>\n\n"
+            "Car Owner Acquisition requires reliable local partners "
+            "who can manage vehicles and drivers on the ground.\n\n"
+            "<b>Before launch, assess:</b>\n"
+            "• Existing fleet partners and their size\n"
+            "• Operational maturity (driver management, payouts, reporting)\n"
+            "• Willingness to manage third-party vehicles\n"
+            "• Contractual readiness\n\n"
+            "<b>Typical partner profiles:</b>\n"
+            "• Fleet owners with 10+ vehicles\n"
+            "• Vehicle management companies\n"
+            "• Experienced driver partners scaling into fleets"
+        ),
+        parent_id="start_step_1",
+    )
+)
+
+# Step 1.4 - Go / No-Go decision
+add_node(
+    MenuNode(
+        id="start_step_1_launch_decision",
+        title="Go / No-Go decision",
+        text=(
+            "<b>Go / No-Go decision</b>\n\n"
+            "After completing market and financial analysis, "
+            "the local and central teams should make a clear launch decision.\n\n"
+            "<b>Launch is recommended if:</b>\n"
+            "• There is proven owner demand\n"
+            "• Unit economics are positive\n"
+            "• At least one operational partner is ready\n\n"
+            "If these conditions are not met, "
+            "the launch should be postponed or limited to a pilot."
+        ),
+        parent_id="start_step_1",
     )
 )
 
@@ -157,26 +371,156 @@ add_node(
         title="Step 2 — Ops readiness",
         text=(
             "<b>Step 2 — Ops readiness</b>\n\n"
-            "<b>Scouts & call center readiness checklist:</b>\n"
-            "• Scouts and call-center flow defined and documented\n"
-            "• Lead handling script prepared for scouts / call center\n\n"
-            "<b>Contracts required:</b>\n"
-            "Contracts are prepared and localized (see Materials & templates → Contracts).\n\n"
-            "<b>Partner onboarding process:</b>\n"
-            "Clear process for onboarding partners.\n\n"
-            "<b>Lead handling steps:</b>\n"
-            "Define who calls, when, how many attempts.\n\n"
-            "<b>Landing structure template:</b>\n"
-            "Use landing content template for web team."
+            "This step ensures that all operational components are ready "
+            "before starting any acquisition activity.\n\n"
+            "Ops readiness is critical: launching marketing without operational "
+            "setup leads to lost leads, poor partner experience and weak results.\n\n"
+            "This step must be completed before launching landing pages, "
+            "WhatsApp flows or offline acquisition."
         ),
         parent_id="start_launch",
-        links=[
-            Link("Example web ticket (YANGOWEB-439)", "https://st.yandex-team.ru/YANGOWEB-439"),
-            Link("Lead tracker (Sheet)",
-                 "https://docs.google.com/spreadsheets/d/1WhA1pt725L9uGHG6pDDRx5iFxSz2xPRuGJJGIPsAoAA/edit"),
-            Link("KPI tracker (Sheet)",
-                 "https://docs.google.com/spreadsheets/d/1G43o8VMwbvrzNniwv8fOVm1W_xOawFLbfTZusbaDtZI/edit"),
+        children=[
+            ("Local ops & ownership", "start_step_2_ops_team_setup"),
+            ("Scouts / call center readiness", "start_step_2_scouts_call_center"),
+            ("Contracts & legal alignment", "start_step_2_contracts_legal"),
         ],
+    )
+)
+
+# Step 2.1 - Local ops & ownership
+add_node(
+    MenuNode(
+        id="start_step_2_ops_team_setup",
+        title="Local ops & ownership",
+        text=(
+            "<b>Local ops & ownership</b>\n\n"
+            "Clear ownership on the local side is mandatory.\n\n"
+            "<b>Before launch, define:</b>\n"
+            "• Who owns the Car Owner stream locally\n"
+            "• Who manages partners\n"
+            "• Who owns the lead tracker\n"
+            "• Who is responsible for reporting and follow-ups\n\n"
+            "There must be a single ops owner responsible "
+            "for the end-to-end flow."
+        ),
+        parent_id="start_step_2",
+    )
+)
+
+# Step 2.2 - Scouts / call center readiness
+add_node(
+    MenuNode(
+        id="start_step_2_scouts_call_center",
+        title="Scouts / call center readiness",
+        text=(
+            "<b>Scouts / call center readiness</b>\n\n"
+            "Leads must be contacted quickly and consistently.\n\n"
+            "<b>Before launch, ensure:</b>\n"
+            "• Scouts or call center are assigned\n"
+            "• They are trained on the program logic\n"
+            "• Lead handling scripts are approved\n"
+            "• SLA for first contact is defined\n\n"
+            "<b>Recommended:</b>\n"
+            "• First contact within 24 hours\n"
+            "• Minimum 3 contact attempts per lead\n\n"
+            "<b>Example lead handling script & qualification template:</b>\n"
+            "https://docs.google.com/spreadsheets/d/1Zj2345sqJvAdQ_jZ-9-RHe86y-w83bPpl6VKMLzn5Zg/edit?resourcekey=&gid=887705287#gid=887705287"
+        ),
+        parent_id="start_step_2",
+        links=[
+            Link("Lead handling script & qualification template",
+                 "https://docs.google.com/spreadsheets/d/1Zj2345sqJvAdQ_jZ-9-RHe86y-w83bPpl6VKMLzn5Zg/edit?resourcekey=&gid=887705287#gid=887705287"),
+        ],
+    )
+)
+
+# Step 2.3 - Contracts & legal alignment
+add_node(
+    MenuNode(
+        id="start_step_2_contracts_legal",
+        title="Contracts & legal alignment",
+        text=(
+            "<b>Contracts & legal alignment</b>\n\n"
+            "Contractual setup must be ready before onboarding car owners.\n\n"
+            "<b>Ensure that:</b>\n"
+            "• A local contract template exists\n"
+            "• Contract terms are aligned with partner model\n"
+            "• Responsibilities and payouts are clearly defined\n\n"
+            "<b>Example contracts from other markets:</b>\n"
+            "• Zambia (EN)\n"
+            "• Angola (PT)\n"
+            "• Cameroon (FR)\n\n"
+            "<b>Example legal approval ticket (for reference):</b>\n"
+            "https://st.yandex-team.ru/YLEGAL-16069?from=bell#692ec1649f4c341e3b94483b\n\n"
+            "⚠ <b>NOTE</b>\n"
+            "These contracts are examples only.\n"
+            "They cannot be reused directly and must always be:\n"
+            "• adapted to local legislation\n"
+            "• reviewed with the partner\n"
+            "• validated by the legal department"
+        ),
+        parent_id="start_step_2",
+        links=[
+            Link("Example legal approval ticket",
+                 "https://st.yandex-team.ru/YLEGAL-16069?from=bell#692ec1649f4c341e3b94483b"),
+        ],
+        files=[
+            FileRef("Contract Eng (Zambia)", CONTRACTS_DIR / "Contract Eng (Zambia).docx"),
+            FileRef("Contract Portu (Angola)", CONTRACTS_DIR / "Contract Portu (Angola).pdf"),
+            FileRef("Contract FR (Cameroon)", CONTRACTS_DIR / "Contract FR (Cameroon).pdf"),
+        ],
+    )
+)
+
+# Step 2.4 - Lead tracker setup
+add_node(
+    MenuNode(
+        id="start_step_2_lead_tracker_setup",
+        title="Lead tracker setup",
+        text=(
+            "<b>Lead tracker setup</b>\n\n"
+            "The lead tracker is the single source of truth for all incoming leads.\n\n"
+            "Each market must use a unified tracker structure to ensure comparable reporting "
+            "and correct performance analysis.\n\n"
+            "<b>Minimum required fields:</b>\n"
+            "• Lead ID\n"
+            "• Source\n"
+            "• Date created\n"
+            "• Contact status\n"
+            "• Qualification status\n"
+            "• Partner assigned\n"
+            "• Contract status\n"
+            "• Converted car (Yes / No)\n\n"
+            "<b>Example tracker template:</b>\n"
+            "https://docs.google.com/spreadsheets/d/13hyO6Z6D7KxN9CH9llOW9vNhtyAMmATjcp7qklyCdb0/edit?gid=1452383912#gid=1452383912\n\n"
+            "⚠ <b>NOTE</b>\n"
+            "Tracker structure can be adapted locally, but core fields must not be removed."
+        ),
+        parent_id="start_step_4",
+        links=[
+            Link("Example tracker template",
+                 "https://docs.google.com/spreadsheets/d/13hyO6Z6D7KxN9CH9llOW9vNhtyAMmATjcp7qklyCdb0/edit?gid=1452383912#gid=1452383912"),
+        ],
+    )
+)
+
+# Step 2.5 - Go-live readiness check
+add_node(
+    MenuNode(
+        id="start_step_2_ops_go_live_check",
+        title="Go-live readiness check",
+        text=(
+            "<b>Go-live readiness check</b>\n\n"
+            "Before starting acquisition, confirm that:\n"
+            "• Ops owner is assigned\n"
+            "• Partner is trained and ready\n"
+            "• Contracts are approved\n"
+            "• Lead tracker is live\n"
+            "• Scouts / call center are active\n\n"
+            "Only after this confirmation the market "
+            "is ready to move to acquisition channels."
+        ),
+        parent_id="start_step_7",
     )
 )
 
@@ -275,25 +619,73 @@ add_node(
 add_node(
     MenuNode(
         id="start_step_4",
-        title="Step 4 — Lead processing",
+        title="Step 4 — Lead processing & reporting",
         text=(
-            "<b>Step 4 — Lead processing</b>\n\n"
-            "<b>Lead qualification rules:</b>\n"
-            "Define who is a good lead (car model, year, mileage, ownership).\n\n"
-            "<b>Scripts for calls:</b>\n"
-            "Use scripts for calling and follow-up from the table below.\n\n"
-            "<b>Examples of contacted leads:</b>\n"
-            "Track examples of good and bad leads.\n\n"
-            "<b>Lead response SLA:</b>\n"
-            "Define how fast you must contact each lead (e.g., within 24 hours)."
+            "<b>Step 4 — Lead processing & reporting</b>\n\n"
+            "This step defines how incoming leads are collected, processed, tracked and reported.\n\n"
+            "Correct lead processing is critical to avoid lead loss, delays and data inconsistency "
+            "between marketing, operations and partners.\n\n"
+            "This step must be completed before scaling acquisition channels or launching performance campaigns."
         ),
         parent_id="start_launch",
-        links=[
-            Link("Lead handling scripts (Sheet)",
-                 "https://docs.google.com/spreadsheets/d/1Zj2345sqJvAdQ_jZ-9-RHe86y-w83bPpl6VKMLzn5Zg/edit?resourcekey=&gid=887705287#gid=887705287"),
-            Link("Lead tracker (Sheet)",
-                 "https://docs.google.com/spreadsheets/d/1WhA1pt725L9uGHG6pDDRx5iFxSz2xPRuGJJGIPsAoAA/edit"),
+        children=[
+            ("Lead intake & routing", "start_step_4_lead_intake_routing"),
+            ("Lead tracker setup", "start_step_2_lead_tracker_setup"),
+            ("Weekly reporting & KPI", "start_step_4_weekly_reporting_kpi"),
         ],
+    )
+)
+
+# Step 4.1 - Lead intake & routing
+add_node(
+    MenuNode(
+        id="start_step_4_lead_intake_routing",
+        title="Lead intake & routing",
+        text=(
+            "<b>Lead intake & routing</b>\n\n"
+            "All incoming leads must follow a clear and unified routing flow to ensure fast processing "
+            "and correct ownership.\n\n"
+            "<b>Typical lead sources:</b>\n"
+            "• Landing pages\n"
+            "• WhatsApp flows\n"
+            "• Performance campaigns\n"
+            "• Offline acquisition (OOH, scouts)\n\n"
+            "<b>Standard routing flow:</b>\n"
+            "Landing / Channel → Lead tracker → Call center / Partner → Contract signing\n\n"
+            "<b>Ensure that:</b>\n"
+            "• Each lead source is clearly labeled\n"
+            "• Responsibility for first contact is defined\n"
+            "• SLA for first contact is agreed with the partner"
+        ),
+        parent_id="start_step_4",
+    )
+)
+
+# Step 4.3 - Weekly reporting & KPI
+add_node(
+    MenuNode(
+        id="start_step_4_weekly_reporting_kpi",
+        title="Weekly reporting & KPI",
+        text=(
+            "<b>Weekly reporting & KPI</b>\n\n"
+            "Local teams are required to share weekly lead performance reports "
+            "to track funnel health and partner efficiency.\n\n"
+            "<b>Typical weekly report format:</b>\n\n"
+            "Total leads: XXX\n"
+            "Leads contacted (called): XXX\n"
+            "Leads with no response: XXX\n"
+            "Hot leads (interested in the program): XXX\n"
+            "Leads forwarded to partner: XXX\n"
+            "Leads in contract signing process: XXX\n"
+            "Leads with signed contracts: XXX\n"
+            "Converted cars: XXX\n\n"
+            "Reports are usually shared once per week via Telegram using data from the lead tracker.\n\n"
+            "<b>Ensure that:</b>\n"
+            "• Reporting cadence is agreed\n"
+            "• One owner is responsible for sending reports\n"
+            "• Numbers are aligned with the tracker"
+        ),
+        parent_id="start_step_4",
     )
 )
 
@@ -351,24 +743,13 @@ add_node(
 add_node(
     MenuNode(
         id="start_step_7",
-        title="Step 7 — Go live checklist",
+        title="Step 5 — Go live checklist",
         text=(
-            "<b>Step 7 — Go live checklist</b>\n\n"
-            "<b>Last validation checklist:</b>\n"
-            "• All operations ready (scouts, call center, contracts)\n"
-            "• Acquisition channels configured (landing/WA)\n"
-            "• Lead processing flow tested\n"
-            "• KPIs tracking set up\n\n"
-            "<b>Launch communication plan:</b>\n"
-            "• Marketing materials ready\n"
-            "• Communication channels prepared\n"
-            "• Team briefed\n\n"
-            "<b>Monitoring plan for first 14 days:</b>\n"
-            "• Daily check-ins\n"
-            "• Weekly reports scheduled\n"
-            "• Escalation process defined"
+            "<b>Step 5 — Go-live checklist</b>\n\n"
+            "Mark each item as completed before go-live."
         ),
         parent_id="start_launch",
+        children=[],  # Checklist items are handled dynamically
     )
 )
 
@@ -416,7 +797,7 @@ add_node(
         files=[
             FileRef("Contract Eng (Zambia)", CONTRACTS_DIR / "Contract Eng (Zambia).docx"),
             FileRef("Contract Portu (Angola)", CONTRACTS_DIR / "Contract Portu (Angola).pdf"),
-            FileRef("Contract FR (Cameroon)", CONTRACTS_DIR / "Сontract FR (Cameroon).pdf"),
+            FileRef("Contract FR (Cameroon)", CONTRACTS_DIR / "Contract FR (Cameroon).pdf"),
         ],
     )
 )
@@ -797,33 +1178,51 @@ add_node(
         id="flows",
         title="Communication flows",
         text=(
-            "<b>💬 Communication flows</b>\n\n"
-            "Choose a flow to see the high-level steps and links."
+            "<b>✅ Communication flows</b>\n\n"
+            "This section describes the two supported communication flows "
+            "used in the Car Owner Acquisition stream.\n\n"
+            "Each flow has different strengths and limitations.\n"
+            "Local teams should choose the flow based on tracking needs, "
+            "market maturity and operational readiness."
         ),
         parent_id="root",
         children=[
-            ("Landing flow", "flows_landing"),
-            ("WhatsApp flow (Zambia example)", "flows_wa"),
-            ("Partner onboarding flow", "flows_partner"),
+            ("Flow 1 — Landing page (recommended)", "flows_landing"),
+            ("Flow 2 — WhatsApp", "flows_wa"),
+            ("Flow selection guidance", "flows_selection"),
         ],
     )
 )
 
-# Landing flow
+# Flow 1 — Landing page
 add_node(
     MenuNode(
         id="flows_landing",
-        title="Landing flow",
+        title="Landing page",
         text=(
-            "<b>Landing flow</b>\n\n"
-            "<b>Main user journey:</b>\n"
-            "1. Ad click → landing page\n"
-            "2. Landing explains value, requirements, models, earnings, trust\n"
-            "3. User fills form → lead captured in Google Sheet\n"
-            "4. Call-center / partner calls lead, qualifies and invites to office\n"
-            "5. Office visit: docs & car check\n"
-            "6. Contract signing\n"
-            "7. Add car to fleet system / partner account"
+            "<b>🔹 Flow 1 — Landing page</b>\n\n"
+            "Landing pages are the primary and recommended communication flow "
+            "for Car Owner Acquisition.\n\n"
+            "They provide structured lead collection and full visibility "
+            "across the acquisition funnel.\n\n"
+            "<b>Key benefits:</b>\n"
+            "• Structured lead form\n"
+            "• Clear value proposition\n"
+            "• Full analytics and attribution\n"
+            "• Easy integration with lead trackers\n"
+            "• Scalable for performance campaigns\n\n"
+            "<b>Typical use cases:</b>\n"
+            "• Performance marketing\n"
+            "• In-app traffic\n"
+            "• Offline QR codes\n\n"
+            "<b>Limitations:</b>\n"
+            "• Requires web team involvement\n"
+            "• Setup time before launch\n\n"
+            "<b>Examples of working landings:</b>\n"
+            "• Zambia — https://yango.com/en_zm/carinvest/\n"
+            "• Angola — https://yango.com/en_ao/carinvest/\n"
+            "• Cameroon — https://yango.com/en_cm/carinvest/\n"
+            "• Ethiopia — https://yango.com/en_et/carinvest/"
         ),
         parent_id="flows",
         links=[
@@ -835,57 +1234,50 @@ add_node(
     )
 )
 
-# WhatsApp flow
+# Flow 2 — WhatsApp
 add_node(
     MenuNode(
         id="flows_wa",
-        title="WhatsApp flow (Zambia example)",
+        title="WhatsApp",
         text=(
-            "<b>WhatsApp flow (Zambia example)</b>\n\n"
-            "<b>Main user journey:</b>\n"
-            "1. Ad click → WA chat opens\n"
-            "2. Auto-greeting explains the program\n"
-            "3. Agent asks qualification questions (cars, model, year, mileage)\n"
-            "4. If qualified — move lead to partner / schedule meeting\n"
-            "5. Office visit: docs & car check\n"
-            "6. Contract signing\n"
-            "7. Add car to fleet system\n\n"
-            "<b>Example greeting (Zambia):</b>\n"
-            "Hi! 👋 Thanks for your interest.\n\n"
-            "The program is simple: if you have a car, you can rent it to a Yango partner "
-            "and receive weekly income — without driving yourself.\n\n"
-            "We'll ask a few quick questions to confirm your car is available and meets the requirements.\n\n"
-            "You can already reply with:\n"
-            "– How many cars you have\n"
-            "– Make and model\n"
-            "– Year of manufacture\n"
-            "– Mileage\n\n"
-            "You can also find more details here: https://yango.com/en_zm/carinvest/"
+            "<b>🔹 Flow 2 — WhatsApp</b>\n\n"
+            "WhatsApp is used as a simple and fast entry point "
+            "when landing pages are not available or as a temporary solution.\n\n"
+            "<b>Key benefits:</b>\n"
+            "• Low entry barrier for users\n"
+            "• Fast setup\n"
+            "• Familiar channel in many markets\n\n"
+            "<b>Typical use cases:</b>\n"
+            "• Early market testing\n"
+            "• Offline acquisition\n"
+            "• Small-scale pilots\n\n"
+            "<b>Limitations:</b>\n"
+            "• No built-in analytics for incoming leads\n"
+            "• Traffic source attribution is not available\n"
+            "• Manual lead consolidation is required\n"
+            "• Limited scalability\n\n"
+            "WhatsApp should be treated as a temporary or complementary flow, "
+            "not a long-term replacement for landing pages."
         ),
         parent_id="flows",
-        links=[
-            Link("WA scripts & questions (Sheet)",
-                 "https://docs.google.com/spreadsheets/d/1Zj2345sqJvAdQ_jZ-9-RHe86y-w83bPpl6VKMLzn5Zg/edit?resourcekey=&gid=887705287#gid=887705287"),
-        ],
     )
 )
 
-# Partner onboarding flow
+# Flow selection guidance
 add_node(
     MenuNode(
-        id="flows_partner",
-        title="Partner onboarding flow",
+        id="flows_selection",
+        title="Flow selection guidance",
         text=(
-            "<b>Partner onboarding flow</b>\n\n"
-            "<b>Steps that partner goes through after contact:</b>\n"
-            "1. Initial contact and qualification\n"
-            "2. Meeting scheduled (office visit or online)\n"
-            "3. Documentation review (ID, car ownership, insurance)\n"
-            "4. Car inspection and validation\n"
-            "5. Contract signing\n"
-            "6. Onboarding to fleet system\n"
-            "7. First driver assignment\n"
-            "8. Day 1 support and monitoring"
+            "<b>🔹 Flow selection guidance</b>\n\n"
+            "<b>Recommended default setup:</b>\n"
+            "Landing page.\n\n"
+            "<b>WhatsApp can be used if:</b>\n"
+            "• Landing page is not yet available\n"
+            "• Market is in early testing phase\n"
+            "• Volume is limited and manual processing is acceptable\n\n"
+            "As the market scales, teams should migrate "
+            "from WhatsApp to landing-based acquisition."
         ),
         parent_id="flows",
     )
@@ -907,11 +1299,10 @@ add_node(
             ("KPI definitions and formulas", "reports_definitions"),
             ("Country benchmarks", "reports_benchmarks"),
             ("KPI tracker", "reports_tracker"),
-            ("Weekly report templates", "reports_weekly"),
+            ("Weekly reports", "reports_weekly"),
         ],
     )
 )
-
 # KPI definitions
 add_node(
     MenuNode(
@@ -943,13 +1334,44 @@ add_node(
         title="Country benchmarks",
         text=(
             "<b>Country benchmarks</b>\n\n"
-            "Target ranges based on Zambia, Angola, Cameroon, Ethiopia:\n\n"
-            "• CPL: $5–15\n"
-            "• CPA: $50–150\n"
-            "• Conversion rate: 15–30%\n"
-            "• Retention (4 weeks): 60–80%"
+            "Country benchmarks provide a reference view of Car Owner Acquisition "
+            "performance across different markets.\n\n"
+            "Benchmarks help answer:\n"
+            "• whether a market is performing within a healthy range\n"
+            "• how results compare to other countries\n"
+            "• where deeper investigation or optimisation is needed\n\n"
+            "Benchmarks are based on historical performance across markets "
+            "and should be used as directional guidance, not strict targets.\n\n"
+            "<b>Indicative benchmark ranges:</b>\n\n"
+            "• <b>Cost per lead (CPL):</b>\n"
+            "  ~$5 – $15\n\n"
+            "• <b>Lead → contract conversion:</b>\n"
+            "  ~5% – 15%\n\n"
+            "• <b>Contract → car activation conversion:</b>\n"
+            "  ~60% – 85%\n\n"
+            "• <b>Time to first contact:</b>\n"
+            "  < 24 hours (recommended)\n\n"
+            "• <b>Cars activated per week (early stage markets):</b>\n"
+            "  ~10 – 40 cars\n\n"
+            "• <b>Cars activated per week (scaled markets):</b>\n"
+            "  40+ cars\n\n"
+            "These ranges may vary depending on:\n"
+            "• market maturity\n"
+            "• acquisition channel mix\n"
+            "• partner setup\n"
+            "• operational capacity\n\n"
+            "<b>Country benchmark tracker:</b>\n"
+            "https://docs.google.com/spreadsheets/d/1iUXvp8b2mjpwrAM3bOq1WbRCSLONJIIUIGS6Hs4ogJI/edit?gid=2140084982#gid=2140084982\n\n"
+            "⚠ <b>NOTE</b>\n"
+            "Benchmarks should always be interpreted in context.\n"
+            "Markets at early launch stages may perform below benchmarks initially, "
+            "while mature markets are expected to outperform them."
         ),
         parent_id="reports",
+        links=[
+            Link("Country benchmark tracker",
+                 "https://docs.google.com/spreadsheets/d/1iUXvp8b2mjpwrAM3bOq1WbRCSLONJIIUIGS6Hs4ogJI/edit?gid=2140084982#gid=2140084982"),
+        ],
     )
 )
 
@@ -972,27 +1394,53 @@ add_node(
     )
 )
 
-# Weekly report templates
+# Weekly reports
 add_node(
     MenuNode(
         id="reports_weekly",
-        title="Weekly report templates",
+        title="Weekly reports",
         text=(
-            "<b>Weekly report templates</b>\n\n"
-            "<b>Structure:</b>\n\n"
-            "<b>Inputs:</b>\n"
-            "• Leads collected\n"
-            "• Contracts signed\n"
-            "• Active cars\n"
-            "• Ad spend\n\n"
-            "<b>Outputs:</b>\n"
-            "• CPL, CPA, conversion rates\n"
-            "• Retention metrics\n"
-            "• Narrative: what worked, what didn't, next steps"
+            "<b>Weekly reports</b>\n\n"
+            "Weekly reports are used to monitor lead quality, funnel health "
+            "and operational performance on a regular basis.\n\n"
+            "Local teams are expected to share a short weekly summary "
+            "based on data from the lead tracker.\n\n"
+            "<b>The goal of weekly reporting is to:</b>\n"
+            "• quickly identify bottlenecks in the funnel\n"
+            "• track lead quality and conversion dynamics\n"
+            "• ensure alignment between marketing, ops and partners\n"
+            "• enable fast corrective actions if needed\n\n"
+            "<b>Typical weekly report metrics:</b>\n"
+            "• Total leads\n"
+            "• Leads contacted (called)\n"
+            "• Leads with no response\n"
+            "• Hot leads (interested in the program)\n"
+            "• Leads forwarded to partner\n"
+            "• Leads in contract signing process\n"
+            "• Leads with signed contracts\n"
+            "• Converted cars\n\n"
+            "<b>Example weekly report format (Telegram):</b>\n\n"
+            "📊 <b>Weekly Car Owner Report — Zambia</b>\n"
+            "🗓 Period: Nov 1–7\n\n"
+            "• Total leads: 320\n"
+            "• Leads contacted: 250\n"
+            "• No response: 70\n"
+            "• Hot leads: 110\n"
+            "• Leads forwarded to partner: 80\n"
+            "• In contract signing: 45\n"
+            "• Signed contracts: 32\n"
+            "• Converted cars: 28\n\n"
+            "Reports are usually shared once per week "
+            "via Telegram / Slack / Email, depending on local setup.\n\n"
+            "<b>Example weekly report template:</b>\n"
+            "https://docs.google.com/spreadsheets/d/1Zj2345sqJvAdQ_jZ-9-RHe86y-w83bPpl6VKMLzn5Zg/edit?resourcekey=&gid=2116500930#gid=2116500930\n\n"
+            "⚠ <b>NOTE</b>\n"
+            "Weekly reports must be aligned with the lead tracker.\n"
+            "Manual adjustments or estimates should be avoided."
         ),
         parent_id="reports",
         links=[
-            Link("Example weekly report (Sheet)",
+            Link("Example weekly report template",
                  "https://docs.google.com/spreadsheets/d/1Zj2345sqJvAdQ_jZ-9-RHe86y-w83bPpl6VKMLzn5Zg/edit?resourcekey=&gid=2116500930#gid=2116500930"),
         ],
     )
@@ -1002,20 +1450,63 @@ add_node(
 # 5. FAQ ---------------------------------------------------------------------
 
 faq_text = (
-    "<b>❓ FAQ</b>\n\n"
-    "<b>Q: What is the program about?</b>\n"
-    "A: The program helps car owners rent their vehicles to Yango partners and earn "
-    "predictable weekly income without needing to drive themselves.\n\n"
-    "<b>Q: Which cars are eligible?</b>\n"
-    "A: Accepted city cars with relevant year and mileage; insurance required per country policy.\n\n"
-    "<b>Q: How long does onboarding take?</b>\n"
-    "A: Typically 1–2 weeks from initial contact to contract signing and car activation.\n\n"
-    "<b>Q: Who is this bot for?</b>\n"
-    "A: For local teams launching car owner acquisition streams.\n\n"
-    "<b>Q: Which countries are covered?</b>\n"
-    "A: Initially Zambia, Angola, Cameroon, Ethiopia — but structure is reusable.\n\n"
-    "<b>Q: Where do I find contracts?</b>\n"
-    "A: In Materials & templates → Contracts."
+    "<b>✅ FAQ</b>\n\n"
+    "This section answers the most common questions "
+    "about launching and operating the Car Owner Acquisition stream.\n\n"
+    "If your question is not covered here, "
+    "please contact the project leads.\n\n"
+    "<b>❓ What is the Car Owner Acquisition program?</b>\n"
+    "The Car Owner Acquisition program allows car owners "
+    "to rent out their vehicles to Yango partners "
+    "and earn regular income without driving themselves.\n\n"
+    "Local partners manage drivers and operations, "
+    "while Yango supports demand, platform access and tooling.\n\n"
+    "<b>❓ When should a market launch this stream?</b>\n"
+    "The stream should be launched only after:\n"
+    "• Market demand is validated\n"
+    "• Unit economics are positive\n"
+    "• Operational readiness is confirmed\n"
+    "• A partner is ready to manage vehicles\n\n"
+    "Launching too early may lead to poor lead quality "
+    "and low conversion.\n\n"
+    "<b>❓ What is the recommended acquisition flow?</b>\n"
+    "The recommended default setup is:\n"
+    "Landing page → Lead tracker → Call center / scouts → Partner\n\n"
+    "WhatsApp can be used as a temporary or early-stage solution, "
+    "but it is not recommended for scaling.\n\n"
+    "<b>❓ Why is WhatsApp not recommended as a long-term solution?</b>\n"
+    "WhatsApp has important limitations:\n"
+    "• No built-in analytics for incoming leads\n"
+    "• No traffic source attribution\n"
+    "• Manual lead consolidation\n"
+    "• Limited scalability\n\n"
+    "As volumes grow, landing-based acquisition "
+    "provides much better control and visibility.\n\n"
+    "<b>❓ Who owns lead processing and reporting?</b>\n"
+    "Lead processing is usually owned by local operations "
+    "or an assigned call center.\n\n"
+    "Reporting must be based on the lead tracker "
+    "and shared on a weekly basis with the central team.\n\n"
+    "<b>❓ Can we reuse contracts from other countries?</b>\n"
+    "No.\n\n"
+    "Contracts from other markets are provided "
+    "for reference only.\n\n"
+    "Each contract must be:\n"
+    "• adapted to local legislation\n"
+    "• aligned with the partner\n"
+    "• approved by the legal department\n\n"
+    "<b>❓ How do we know if a market is performing well?</b>\n"
+    "Performance should be evaluated using:\n"
+    "• Weekly reports\n"
+    "• Country benchmarks\n"
+    "• Conversion rates across the funnel\n\n"
+    "Benchmarks provide directional guidance, "
+    "not strict targets.\n\n"
+    "<b>❓ Who should we contact if we have questions?</b>\n"
+    "For marketing and launch-related questions:\n"
+    "@AnnaD1 — Marketing lead\n\n"
+    "For operational questions:\n"
+    "@nikharpatel09 — Ops lead"
 )
 
 add_node(
@@ -1051,8 +1542,146 @@ add_node(
 # ---------- UI HELPERS ----------
 
 
-def build_menu_keyboard(node: MenuNode) -> InlineKeyboardMarkup:
+def get_checklist_state(user_id: int) -> Dict[str, bool]:
+    """Get checklist state for a user, initializing if needed."""
+    if user_id not in _checklist_state:
+        _checklist_state[user_id] = {}
+    return _checklist_state[user_id]
+
+
+def toggle_checklist_item(user_id: int, item_id: str) -> bool:
+    """Toggle a checklist item and return new state."""
+    state = get_checklist_state(user_id)
+    current = state.get(item_id, False)
+    state[item_id] = not current
+    return state[item_id]
+
+
+def get_checklist_progress(user_id: int) -> tuple[int, int]:
+    """Get checklist progress: (completed, total)."""
+    state = get_checklist_state(user_id)
+    total = sum(len(items) for items in CHECKLIST_ITEMS.values())
+    completed = sum(1 for items in CHECKLIST_ITEMS.values() for item_id, _ in items if state.get(item_id, False))
+    return completed, total
+
+
+def build_checklist_keyboard(user_id: int, node: MenuNode) -> InlineKeyboardMarkup:
+    """Build keyboard for checklist node (Step 7)."""
+    state = get_checklist_state(user_id)
+    rows: List[List[InlineKeyboardButton]] = []
+    
+    # Add checklist items grouped by category
+    for category, items in CHECKLIST_ITEMS.items():
+        for item_id, item_text in items:
+            checked = state.get(item_id, False)
+            icon = "✅" if checked else "⬜"
+            rows.append([InlineKeyboardButton(
+                text=f"{icon} {item_text}",
+                callback_data=f"toggle:{item_id}"
+            )])
+    
+    # Navigation row
+    footer_buttons: List[InlineKeyboardButton] = []
+    parent_node_id = node.parent_id if node.parent_id and node.parent_id in MENU else "root"
+    footer_buttons.append(InlineKeyboardButton(
+        text="⬅ Back",
+        callback_data=f"menu:{parent_node_id}"
+    ))
+    footer_buttons.append(InlineKeyboardButton(
+        text="🏠 Home",
+        callback_data=f"menu:root"
+    ))
+    rows.append(footer_buttons)
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def parse_callback(data: str) -> Optional[str]:
+    """
+    Parse callback data and return node_id.
+    Supports formats:
+    - menu:<node_id> (current format)
+    - v3:<node_id> (legacy format, for compatibility)
+    - v4:<node_id> (legacy format, for compatibility)
+    
+    Returns node_id if valid, None otherwise.
+    """
+    if not data:
+        return None
+    
+    # Try to parse as menu:<node_id>
+    if data.startswith("menu:"):
+        try:
+            _, node_id = data.split(":", 1)
+            return node_id.strip()
+        except ValueError:
+            return None
+    
+    # Try to parse as v3:<node_id> or v4:<node_id> (legacy support)
+    if data.startswith("v3:") or data.startswith("v4:"):
+        try:
+            _, node_id = data.split(":", 1)
+            node_id = node_id.strip()
+            # Map legacy formats to current format
+            print(f"DEBUG: Legacy callback format detected: '{data}' -> node_id='{node_id}'")
+            return node_id
+        except ValueError:
+            return None
+    
+    return None
+
+
+def build_main_menu() -> InlineKeyboardMarkup:
+    """
+    Build STATIC main menu keyboard.
+    This function ALWAYS returns the same buttons in the same order.
+    Main menu must NEVER change dynamically.
+    """
+    print("DEBUG: build_main_menu() called - building STATIC main menu")
+    rows: List[List[InlineKeyboardButton]] = []
+    
+    # STATIC main menu buttons - ALWAYS in this exact order
+    main_menu_buttons = [
+        ("How it works", "what_is_coa"),
+        ("🚀 Start launch", "start_launch"),
+        ("💬 Communication flows", "flows"),
+        ("📁 Materials & templates", "materials"),
+        ("📊 Reports & KPI", "reports"),
+        ("❓ FAQ", "faq"),
+        ("👥 Contacts", "contacts"),
+    ]
+    
+    print(f"DEBUG: Main menu buttons: {main_menu_buttons}")
+    
+    # Add main menu buttons
+    for text, child_id in main_menu_buttons:
+        rows.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"menu:{child_id}"
+        )])
+    
+    # Navigation row - Back and Home
+    # In root menu, both Back and Home go to root (since root has no parent)
+    footer_buttons: List[InlineKeyboardButton] = [
+        InlineKeyboardButton(text="⬅ Back", callback_data="menu:root"),
+        InlineKeyboardButton(text="🏠 Home", callback_data="menu:root")
+    ]
+    rows.append(footer_buttons)
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_menu_keyboard(node: MenuNode, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     """Build keyboard with section items, links, files, and nav buttons (Back/Home)."""
+    
+    # CRITICAL: Root node ALWAYS uses static main menu
+    if node.id == "root":
+        print("DEBUG: Root node detected, using build_main_menu()")
+        return build_main_menu()
+    
+    # Special handling for checklist node
+    if node.id == "start_step_7" and user_id is not None:
+        return build_checklist_keyboard(user_id, node)
     
     # Use lists, not generators, to avoid TypeError
     rows: List[List[InlineKeyboardButton]] = []
@@ -1078,12 +1707,22 @@ def build_menu_keyboard(node: MenuNode) -> InlineKeyboardMarkup:
     # Navigation row - ALWAYS Back and Home
     footer_buttons: List[InlineKeyboardButton] = []
     
-    if node.parent_id is not None:
-        footer_buttons.append(InlineKeyboardButton(
-            text="⬅ Back",
-            callback_data=f"menu:{node.parent_id}"
-        ))
+    # Determine parent node for Back button
+    # Back always goes to parent_id, or root if no parent
+    parent_node_id = node.parent_id if node.parent_id is not None else "root"
     
+    # Verify parent exists in MENU
+    if parent_node_id not in MENU:
+        print(f"WARNING: Parent node '{parent_node_id}' not found for node '{node.id}', falling back to root")
+        parent_node_id = "root"
+    
+    # Back button: goes to parent (or root if no parent)
+    footer_buttons.append(InlineKeyboardButton(
+        text="⬅ Back",
+        callback_data=f"menu:{parent_node_id}"
+    ))
+    
+    # Home button: always goes to root
     footer_buttons.append(InlineKeyboardButton(
         text="🏠 Home",
         callback_data=f"menu:root"
@@ -1095,24 +1734,62 @@ def build_menu_keyboard(node: MenuNode) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def get_checklist_text(user_id: int) -> str:
+    """Generate checklist text with progress."""
+    completed, total = get_checklist_progress(user_id)
+    return (
+        "<b>Step 5 — Go-live checklist</b>\n\n"
+        "Mark each item as completed before go-live.\n\n"
+        f"<b>Progress: {completed} / {total} completed</b>"
+    )
+
+
+def render_node(node_id: str, user_id: Optional[int] = None) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Unified function to render any node.
+    Returns (text, keyboard) tuple.
+    This is the SINGLE source of truth for node rendering.
+    """
+    # If node_id not found, fallback to root
+    if node_id not in MENU:
+        print(f"WARNING: node_id '{node_id}' not found in MENU, falling back to root")
+        node_id = "root"
+    
+    node = MENU[node_id]
+    
+    # CRITICAL: Root node ALWAYS uses static main menu directly
+    if node_id == "root":
+        print("DEBUG: render_node() - Root node detected, using build_main_menu() directly")
+        return (node.text, build_main_menu())
+    
+    # Special handling for checklist node
+    if node_id == "start_step_7":
+        if user_id is None:
+            raise ValueError("user_id is required for checklist node")
+        text = get_checklist_text(user_id)
+        keyboard = build_menu_keyboard(node, user_id=user_id)
+        return (text, keyboard)
+    
+    # Regular node
+    text = node.text
+    keyboard = build_menu_keyboard(node)
+    return (text, keyboard)
+
+
 async def show_node(message: Message, node_id: str) -> None:
     """
     Show a menu node by sending a new message.
     Used for /start command.
     For callbacks, use edit_node instead.
     """
-    # If node_id not found, fallback to root
-    if node_id not in MENU:
-        node_id = "root"
-    
-    node = MENU[node_id]
-    text = node.text
-    keyboard = build_menu_keyboard(node)
+    user_id = message.from_user.id if message.from_user else None
+    text, keyboard = render_node(node_id, user_id=user_id)
     
     # Send new message
-    await message.answer(text, reply_markup=keyboard)
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
     
     # Send files if any
+    node = MENU[node_id] if node_id in MENU else MENU["root"]
     if node.files:
         for file_ref in node.files:
             if file_ref.path.exists():
@@ -1120,29 +1797,50 @@ async def show_node(message: Message, node_id: str) -> None:
                 await message.answer_document(file, caption=file_ref.title)
 
 
-async def edit_node(message: Message, node_id: str) -> None:
+async def open_node(message: Message, node_id: str, user_id: Optional[int] = None, mode: str = "edit") -> None:
+    """
+    Unified function to open a node.
+    mode: "edit" (preferred) or "answer"
+    This is the SINGLE entry point for node navigation.
+    """
+    # Render node using unified function
+    text, keyboard = render_node(node_id, user_id=user_id)
+    
+    if mode == "edit":
+        # Try to edit existing message
+        try:
+            await message.edit_text(
+                text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            # Handle different types of errors
+            error_msg = str(e).lower()
+            if "message is not modified" in error_msg or "message_not_modified" in error_msg:
+                # This is OK - message content didn't change, but we still want to update keyboard
+                try:
+                    await message.edit_reply_markup(reply_markup=keyboard)
+                except Exception as e2:
+                    print(f"Failed to update keyboard: {e2}")
+            else:
+                # Message was deleted or can't be edited - send new one as fallback
+                try:
+                    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+                except Exception as e2:
+                    print(f"Failed to send fallback message: {e2}")
+    else:
+        # Send new message
+        await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+async def edit_node(message: Message, node_id: str, user_id: Optional[int] = None) -> None:
     """
     Edit existing message to show a menu node.
     Used for callback queries.
+    DEPRECATED: Use open_node() instead. Kept for backward compatibility.
     """
-    # If node_id not found, fallback to root
-    if node_id not in MENU:
-        node_id = "root"
-    
-    node = MENU[node_id]
-    text = node.text
-    keyboard = build_menu_keyboard(node)
-    
-    # Edit existing message
-    try:
-        await message.edit_text(
-            text,
-            reply_markup=keyboard,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        # If edit fails (e.g., message not modified), just log it
-        print(f"Edit failed (message may be unchanged): {e}")
+    await open_node(message, node_id, user_id=user_id, mode="edit")
 
 
 # ---------- HANDLERS ----------
@@ -1150,6 +1848,14 @@ async def edit_node(message: Message, node_id: str) -> None:
 # Track processed messages and callbacks to prevent duplicates
 _processed_messages = set()
 _processed_callbacks = set()
+
+# Get or create user lock for preventing race conditions
+async def get_user_lock(user_id: int) -> asyncio.Lock:
+    """Get or create a lock for a specific user."""
+    async with _lock_manager_lock:
+        if user_id not in _user_locks:
+            _user_locks[user_id] = asyncio.Lock()
+        return _user_locks[user_id]
 
 
 @router.message(CommandStart())
@@ -1227,56 +1933,213 @@ async def on_file_callback(cb: CallbackQuery) -> None:
         await cb.answer("An error occurred while loading the file", show_alert=True)
 
 
-# Menu callback handler - handles ONLY "menu:<node_id>" format
-@router.callback_query(F.data.startswith("menu:"))
+# Menu callback handler - handles menu:/v3:/v4: formats
+@router.callback_query(F.data.startswith("menu:") | F.data.startswith("v3:") | F.data.startswith("v4:"))
 async def on_menu_callback(cb: CallbackQuery) -> None:
-    """Handle menu navigation callbacks - format: menu:<node_id>"""
-    if cb.message is None:
+    """
+    Handle menu navigation callbacks.
+    Supports formats: menu:<node_id>, v3:<node_id>, v4:<node_id>
+    """
+    if cb.message is None or cb.from_user is None:
         return
     
-    # Create unique identifier
-    callback_id = f"{cb.message.chat.id}:{cb.message.message_id}:{cb.data}"
+    user_id = cb.from_user.id
     
-    # If already processed, skip
-    if callback_id in _processed_callbacks:
+    # Get user lock to prevent race conditions
+    user_lock = await get_user_lock(user_id)
+    
+    # Use lock to prevent concurrent processing
+    async with user_lock:
+        # Parse callback data using unified parser
+        node_id = parse_callback(cb.data)
+        
+        if node_id is None:
+            print(f"ERROR: Failed to parse callback data '{cb.data}'")
+            try:
+                await cb.answer("Invalid callback data", show_alert=True)
+            except:
+                pass
+            return
+        
+        # If node_id not found in MENU - log error and return silently
+        if node_id not in MENU:
+            print(f"ERROR: Unknown section node_id='{node_id}', callback_data='{cb.data}'")
+            try:
+                await cb.answer()  # Close loading indicator without alert
+            except:
+                pass
+            return
+        
+        # Answer callback FIRST to close loading indicator immediately
         try:
             await cb.answer()
-        except:
+        except Exception as e:
+            print(f"WARNING: Failed to answer callback: {e}")
+        
+        # Then edit the message using unified function
+        try:
+            await open_node(cb.message, node_id, user_id=user_id, mode="edit")
+        except Exception as e:
+            # Log error for debugging
+            print(f"ERROR opening node '{node_id}': {e}")
+            import traceback
+            traceback.print_exc()
+
+
+@router.callback_query(F.data.startswith("toggle:"))
+async def on_checklist_toggle(cb: CallbackQuery) -> None:
+    """Handle checklist item toggle callbacks - format: toggle:<item_id>"""
+    if cb.message is None or cb.from_user is None:
+        return
+    
+    user_id = cb.from_user.id
+    
+    # Get user lock to prevent race conditions
+    user_lock = await get_user_lock(user_id)
+    
+    # Use lock to prevent concurrent processing
+    async with user_lock:
+        # Parse callback data: "toggle:<item_id>"
+        try:
+            _, item_id = cb.data.split(":", 1)
+            item_id = item_id.strip()
+        except Exception as e:
+            print(f"ERROR parsing toggle callback data '{cb.data}': {e}")
+            try:
+                await cb.answer("Invalid callback data", show_alert=True)
+            except:
+                pass
+            return
+        
+        # Verify item_id exists in checklist
+        item_exists = any(item_id == item_id_check for items in CHECKLIST_ITEMS.values() for item_id_check, _ in items)
+        if not item_exists:
+            print(f"ERROR: Unknown checklist item_id='{item_id}'")
+            try:
+                await cb.answer("Unknown checklist item", show_alert=True)
+            except:
+                pass
+            return
+        
+        # Toggle item
+        new_state = toggle_checklist_item(user_id, item_id)
+        status = "checked" if new_state else "unchecked"
+        print(f"DEBUG: Toggled item '{item_id}' for user {user_id}: {status}")
+        
+        # Answer callback immediately
+        try:
+            await cb.answer()
+        except Exception as e:
             pass
-        return
-    
-    # Mark as processed
-    _processed_callbacks.add(callback_id)
-    
-    # Clean up old entries periodically
-    if len(_processed_callbacks) > 200:
-        _processed_callbacks.clear()
-    
-    # Parse callback data: "menu:<node_id>"
-    _, node_id = cb.data.split(":", 1)
-    node_id = node_id.strip()
-    
-    # If node_id not found in MENU - show alert and return
-    if node_id not in MENU:
-        await cb.answer("Unknown section – please send /start", show_alert=True)
-        return
-    
-    # Close loading indicator in Telegram
-    await cb.answer()
-    
-    # Show the requested node by editing existing message
-    await edit_node(cb.message, node_id)
+        
+        # Update message with new checklist state using unified function
+        try:
+            await open_node(cb.message, "start_step_7", user_id=user_id, mode="edit")
+        except Exception as e:
+            print(f"ERROR updating checklist message: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # ---------- RUN ----------
 
+# Protection against double startup
+LOCK_FILE = Path(__file__).parent / ".bot.lock"
+
+
+def check_single_instance() -> None:
+    """Check if another instance is already running."""
+    if LOCK_FILE.exists():
+        # Try to read PID from lock file
+        try:
+            with open(LOCK_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            # Check if process is still running using kill -0
+            try:
+                # Signal 0 doesn't kill, just checks if process exists
+                os.kill(old_pid, 0)
+                print(f"ERROR: Another bot instance is already running (PID: {old_pid})")
+                print("Please stop the existing instance or remove .bot.lock file")
+                sys.exit(1)
+            except ProcessLookupError:
+                # Process doesn't exist, remove stale lock file
+                LOCK_FILE.unlink(missing_ok=True)
+            except PermissionError:
+                # Process exists but we can't signal it (different user)
+                print(f"WARNING: Lock file exists (PID: {old_pid}), but cannot verify")
+                print("If you're sure no other instance is running, remove .bot.lock file")
+        except (ValueError, FileNotFoundError):
+            # Invalid lock file, remove it
+            LOCK_FILE.unlink(missing_ok=True)
+    
+    # Create lock file with current PID
+    try:
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception as e:
+        print(f"Warning: Could not create lock file: {e}")
+
+
+def cleanup_lock() -> None:
+    """Remove lock file on exit."""
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def validate_menu_structure() -> None:
+    """Validate that all menu node references exist."""
+    errors = []
+    for node_id, node in MENU.items():
+        # Check children
+        for _, child_id in node.children:
+            if child_id not in MENU:
+                errors.append(f"Node '{node_id}' references non-existent child '{child_id}'")
+        # Check parent
+        if node.parent_id is not None and node.parent_id not in MENU:
+            errors.append(f"Node '{node_id}' references non-existent parent '{node.parent_id}'")
+    
+    if errors:
+        print("ERROR: Menu structure validation failed:")
+        for error in errors:
+            print(f"  - {error}")
+        sys.exit(1)
+
 
 async def main() -> None:
-    print("Bot running with structured menu...")
-    print(f"Total menu nodes: {len(MENU)}")
-    print(f"Step 3 updated: {'LANDING CHANNEL' in MENU['start_step_3'].text}")
-    await dp.start_polling(bot)
+    """Main bot function - called exactly once."""
+    try:
+        print("=" * 60)
+        print("Bot starting...")
+        print(f"Process ID (PID): {os.getpid()}")
+        print(f"BOT STARTED WITH TOKEN PREFIX: {TOKEN_PREFIX}")
+        print(f"Total menu nodes: {len(MENU)}")
+        
+        # Validate menu structure
+        validate_menu_structure()
+        print("Menu structure validation: OK")
+        print("=" * 60)
+        
+        # This is the ONLY place where start_polling is called
+        # drop_pending_updates=True prevents old callbacks from breaking routing
+        await dp.start_polling(bot, drop_pending_updates=True)
+    except Exception as e:
+        print(f"ERROR in main(): {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        cleanup_lock()
 
 
 if __name__ == "__main__":
+    # Check for single instance before starting
+    check_single_instance()
+    
+    # Register cleanup on exit
+    import atexit
+    atexit.register(cleanup_lock)
+    
+    # Start bot - this is the ONLY place where asyncio.run() is called
     asyncio.run(main())
